@@ -1,0 +1,310 @@
+// =====================================================
+// TIME BLOCK PLANNER - DBML REFERENCE
+// Mỗi block = 30 phút
+// 1 ngày = 48 blocks
+// =====================================================
+
+Enum session_type {
+  immutable
+  mutable
+}
+
+Enum task_status {
+  done
+  canceled
+  happending
+}
+
+Enum task_priority {
+  low
+  medium
+  high
+  critical
+}
+
+Enum notification_type {
+  session_start
+  checkin_late
+  session_completed
+  strict_mode
+  plan_reminder
+  auto_reorder
+  mascot_message
+}
+
+Enum notification_severity {
+  soft
+  normal
+  strict
+}
+
+Enum reorder_reason {
+  late_checkin
+  missed_session
+  user_reschedule
+  conflict_detected
+  strict_mode_push
+}
+
+Enum strict_mode_status {
+  inactive
+  active
+}
+
+
+// =====================================================
+// USER - OK
+// =====================================================
+
+Table users {
+  id uuid [pk]
+  email varchar [unique, not null]
+  username varchar [not null]
+  created_at timestamp
+  updated_at timestamp
+}
+
+
+// =====================================================
+// USER SETTINGS - OK
+// =====================================================
+
+Table user_settings {
+  id uuid [pk]
+  user_id uuid [not null, unique]
+  block_duration_minutes int [not null, default: 30]
+  strict_threshold_percent int [default: 80]
+  blank_block_min_percent int [default: 20]
+  enable_auto_reorder boolean [default: true]
+  enable_mascot boolean [default: true]
+  created_at timestamp
+  updated_at timestamp
+}
+
+
+// =====================================================
+// TASK TYPES - OK
+// =====================================================
+
+Table task_types {
+  id uuid [pk]
+  user_id uuid [not null]
+  name varchar [not null]
+  description text
+  color varchar
+  is_active boolean [default: true]
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, name) [unique]
+    (user_id)
+  }
+}
+
+
+// =====================================================
+// TASK / ĐẦU VIỆC - OK
+// =====================================================
+
+Table tasks {
+  id uuid [pk]
+  user_id uuid [not null]
+  title varchar [not null]
+  description text
+  task_type_id uuid
+  priority task_priority [default: 'medium']
+  status task_status
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, task_type_id)
+  }
+}
+
+
+// =====================================================
+// TIME BLOCKS - OK 
+// =====================================================
+
+Table time_blocks {
+  id uuid [pk]
+  user_id uuid [not null]
+  block_date date [not null]
+  block_index int [not null]
+  start_time timestamp [not null]
+  end_time timestamp [not null]
+  session_id uuid
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, block_date, block_index) [unique]
+    (block_index)
+  }
+}
+
+
+// =====================================================
+// SESSIONS
+// =====================================================
+
+Table sessions {
+  id uuid [pk]
+  user_id uuid [not null]
+  task_id uuid [not null]
+  title varchar [not null]
+  description text
+  session_type session_type [not null]
+  planned_start_time timestamp [not null]
+  planned_end_time timestamp [not null]
+  actual_start_time timestamp
+  actual_end_time timestamp
+  block_count int [not null]
+  checked_in bool
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, planned_start_time)
+    (planned_start_time)
+    (task_id)
+  }
+}
+
+
+
+
+// =====================================================
+// SESSION_REORDER - OK
+// =====================================================
+
+Table session_reorder {
+  id uuid [pk]
+  user_id uuid [not null]
+  session_id uuid [not null]
+  original_start_time timestamp [not null]
+  original_end_time timestamp [not null]
+  new_start_time timestamp
+  new_end_time timestamp
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, created_at)
+    (session_id)
+  }
+}
+
+
+// =====================================================
+// NOTIFICATIONS - OK
+// =====================================================
+
+Table notifications {
+  id uuid [pk]
+  user_id uuid [not null]
+  session_id uuid
+  type notification_type [not null]
+  severity notification_severity [default: 'normal']
+  title varchar [not null]
+  message text [not null]
+  scheduled_at timestamp
+  sent_at timestamp
+  read_at timestamp
+  created_at timestamp
+  Indexes {
+    (user_id, scheduled_at)
+    (session_id)
+    (type)
+  }
+}
+
+
+
+// =====================================================
+// STREAKS - OK
+// =====================================================
+
+Table streaks {
+  id uuid [pk]
+  user_id uuid [not null, unique]
+  current_streak int [default: 0]
+  longest_streak int [default: 0]
+  last_completed_date date
+  last_missed_date date
+  created_at timestamp
+  updated_at timestamp
+}
+
+
+// =====================================================
+// DAILY STATISTICS - OK
+// =====================================================
+
+Table daily_statistics {
+  id uuid [pk]
+  user_id uuid [not null]
+  stat_date date [not null]
+  total_blocks int [not null]
+  planned_blocks int [default: 0]
+  blank_blocks int [default: 0]
+  immutable_blocks int [default: 0]
+  mutable_blocks int [default: 0]
+  skipped_blocks int [default: 0]
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, stat_date) [unique]
+  }
+}
+
+
+// =====================================================
+// WEEKLY STATISTICS - OK
+// =====================================================
+
+Table weekly_statistics {
+  id uuid [pk]
+  user_id uuid [not null]
+  week_start_date date [not null]
+  week_end_date date [not null]
+
+  total_blocks int [not null]
+  planned_blocks int [default: 0]
+  blank_blocks int [default: 0]
+  immutable_blocks int [default: 0]
+  mutable_blocks int [default: 0]
+  completed_blocks int [default: 0]
+  missed_blocks int [default: 0]
+  strict_mode_triggered_count int [default: 0]
+  created_at timestamp
+  updated_at timestamp
+  Indexes {
+    (user_id, week_start_date) [unique]
+  }
+}
+
+
+// =====================================================
+// REFERENCES - OK
+// =====================================================
+
+Ref: user_settings.user_id - users.id
+
+Ref: task_types.user_id > users.id
+Ref: tasks.user_id > users.id
+Ref: tasks.task_type_id > task_types.id
+
+Ref: sessions.user_id > users.id
+Ref: sessions.task_id > tasks.id
+
+Ref: time_blocks.user_id > users.id
+Ref: time_blocks.session_id > sessions.id
+
+Ref: session_reorder.user_id > users.id
+Ref: session_reorder.session_id > sessions.id
+
+Ref: notifications.user_id > users.id
+Ref: notifications.session_id > sessions.id
+
+Ref: streaks.user_id - users.id
+
+Ref: daily_statistics.user_id > users.id
+Ref: weekly_statistics.user_id > users.id
