@@ -286,7 +286,6 @@ Table user_settings {
   strict_threshold_percent int [default: 80]
   blank_block_min_percent int [default: 20]
   enable_auto_reorder boolean [default: true]
-  enable_mascot boolean [default: true]
   created_at timestamp
   updated_at timestamp
 }
@@ -349,17 +348,6 @@ Cho phép hệ thống tự động dời mutable session.
 ```text
 true  => bật auto reorder
 false => tắt auto reorder
-```
-
----
-
-### `enable_mascot`
-
-Cho phép linh vật gửi thông báo, nhắc nhở và cảnh báo.
-
-```text
-true  => bật mascot
-false => tắt mascot
 ```
 
 ---
@@ -1376,78 +1364,3 @@ Lịch hôm nay không còn chỗ thở nữa. Mình đã giúp bạn dời mộ
 6. Ghi log reorder
 7. Đánh dấu ngày đó không đủ điều kiện cộng streak
 ```
-
----
-
-# 9. MVP Scope
-
-MVP nên tập trung vào các chức năng sau:
-
-```text
-1. User và user settings
-2. Task types
-3. Tasks
-4. Generate daily time blocks
-5. Create session
-6. Assign session to blocks
-7. Check block conflict
-8. Check-in session
-9. In-a-task mode
-10. Complete session
-11. Auto reorder mutable session
-12. Auto move lowest-priority session nếu ngày không còn blank block
-13. Daily statistics
-14. Weekly statistics
-15. Streak calculation
-16. Notification cơ bản
-17. Mascot message đơn giản
-```
-
----
-
-# 10. Future Improvements
-
-Một số hướng có thể mở rộng sau MVP:
-
-```text
-1. Recurring sessions
-2. AI auto planning
-3. Calendar sync
-4. Advanced mascot level/mood system
-5. Session templates
-6. Monthly statistics
-7. Habit tracking
-8. Smart reorder based on energy level
-9. Focus mode with app blocking
-10. Team/shared immutable sessions
-```
-
----
-
-# 11. Summary
-
-Time Block Planner là ứng dụng giúp user quản lý thời gian theo block thay vì chỉ theo task hoặc calendar.
-
-Ý tưởng cốt lõi:
-
-```text
-Một ngày có 48 blocks.
-User tạo session để chiếm các blocks.
-Blank block là vùng đệm quan trọng.
-Nếu lịch quá kín, hệ thống phải cảnh báo và tự động tạo lại blank block.
-```
-
-Điểm khác biệt lớn của app:
-
-```text
-1. Quản lý thời gian bằng block
-2. Phân biệt mutable và immutable session
-3. Có in-a-task mode để tập trung
-4. Có auto reorder khi user trễ
-5. Có cơ chế tự move session priority thấp nếu ngày không còn blank block
-6. Có strict mode khi lịch quá tải
-7. Có streak nhưng streak đánh giá cả kỷ luật lẫn chất lượng plan
-8. Có mascot để nhắc nhở và tạo cảm xúc
-```
-
-Ứng dụng không chỉ giúp user “làm được nhiều việc hơn”, mà còn giúp user **plan thực tế hơn, giữ buffer tốt hơn và duy trì kỷ luật cá nhân bền vững hơn**.
