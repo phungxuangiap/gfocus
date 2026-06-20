@@ -1,6 +1,6 @@
-# Time Block Planner
+# GFocus
 
-Time Block Planner là ứng dụng quản lý thời gian theo tư duy **block-based planning**. Thay vì chỉ tạo lịch theo giờ như calendar truyền thống, ứng dụng chia một ngày thành các **time blocks** cố định. Mặc định, mỗi block tương ứng với **30 phút**, vì vậy một ngày có **48 blocks**.
+GFocus là ứng dụng quản lý thời gian theo tư duy **block-based planning**. Thay vì chỉ tạo lịch theo giờ như calendar truyền thống, ứng dụng chia một ngày thành các **time blocks** cố định. Mặc định, mỗi block tương ứng với **30 phút**, vì vậy một ngày có **48 blocks**.
 
 Mục tiêu chính của ứng dụng là giúp người dùng nhìn thấy rõ:
 
