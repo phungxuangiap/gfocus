@@ -1,7 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 export type AppMode = 'plan' | 'focus';
-export type BottomTab = 'calendar' | 'profile';
+export type BottomTab = 'calendar' | 'task' | 'profile';
 
 type AppState = {
   activeTab: BottomTab;

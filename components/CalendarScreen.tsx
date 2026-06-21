@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,6 +13,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import type { StyleProp, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
@@ -41,11 +43,14 @@ type TaskRow = {
 
 type SessionRow = {
   id: string;
+  task_id: string;
   title: string;
+  description: string | null;
   session_type: SessionType;
   planned_start_time: string;
   planned_end_time: string;
   block_count: number;
+  checked_in: boolean | null;
   tasks: {
     title: string;
     task_types: {
@@ -60,6 +65,8 @@ const priorities: TaskPriority[] = ['low', 'medium', 'high', 'critical'];
 const sessionTypes: SessionType[] = ['mutable', 'immutable'];
 const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const hours = Array.from({ length: 18 }, (_, index) => index + 6);
+const dayBlockHeight = 29;
+const weekBlockHeight = 22;
 
 const initialCategory = {
   name: '',
@@ -90,7 +97,6 @@ export function CalendarScreen() {
   const [view, setView] = useState<CalendarView>('week');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [actionModalVisible, setActionModalVisible] = useState(false);
   const [creationMode, setCreationMode] = useState<CreationMode | null>(null);
   const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -98,10 +104,66 @@ export function CalendarScreen() {
   const [categoryForm, setCategoryForm] = useState(initialCategory);
   const [taskForm, setTaskForm] = useState(initialTask);
   const [sessionForm, setSessionForm] = useState(initialSession);
+  const [taskSidebarVisible, setTaskSidebarVisible] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [taskFilter, setTaskFilter] = useState('');
+  const [categoryMenuVisible, setCategoryMenuVisible] = useState(false);
+  const [taskMenuVisible, setTaskMenuVisible] = useState(false);
+  const [selectedSession, setSelectedSession] = useState<SessionRow | null>(null);
+  const [sessionSaving, setSessionSaving] = useState(false);
+  const sidebarTranslate = useRef(new Animated.Value(360)).current;
+  const [now, setNow] = useState(new Date());
   const today = useMemo(() => new Date(), []);
   const weekDays = useMemo(() => getWeekDays(today), [today]);
   const monthDays = useMemo(() => getMonthGrid(today), [today]);
   const userId = session?.user.id;
+  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const filteredTasks = useMemo(
+    () => tasks.filter((task) => {
+      if (categoryFilter && task.task_type_id !== categoryFilter) {
+        return false;
+      }
+
+      if (taskFilter && task.id !== taskFilter) {
+        return false;
+      }
+
+      return true;
+    }),
+    [categoryFilter, taskFilter, tasks],
+  );
+  const filteredSessions = useMemo(
+    () => sessions.filter((item) => {
+      const task = taskById.get(item.task_id);
+
+      if (categoryFilter && task?.task_type_id !== categoryFilter) {
+        return false;
+      }
+
+      if (taskFilter && item.task_id !== taskFilter) {
+        return false;
+      }
+
+      return true;
+    }),
+    [categoryFilter, sessions, taskById, taskFilter],
+  );
+
+  useEffect(() => {
+    Animated.timing(sidebarTranslate, {
+      duration: 260,
+      toValue: taskSidebarVisible ? 0 : 360,
+      useNativeDriver: true,
+    }).start();
+  }, [sidebarTranslate, taskSidebarVisible]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(new Date());
+    }, 60000);
+
+    return () => clearInterval(timer);
+  }, []);
 
   const loadCalendarData = useCallback(async () => {
     if (!supabase || !userId) {
@@ -130,7 +192,7 @@ export function CalendarScreen() {
           .order('created_at', { ascending: false }),
         supabase
           .from('sessions')
-          .select('id, title, session_type, planned_start_time, planned_end_time, block_count, tasks(title, task_types(name, color))')
+          .select('id, task_id, title, description, session_type, planned_start_time, planned_end_time, block_count, checked_in, tasks(title, task_types(name, color))')
           .eq('user_id', userId)
           .gte('planned_start_time', monthStart.toISOString())
           .lt('planned_start_time', monthEnd.toISOString())
@@ -153,9 +215,137 @@ export function CalendarScreen() {
     loadCalendarData();
   }, [loadCalendarData]);
 
-  function openCreateMode(mode: CreationMode) {
-    setCreationMode(mode);
-    setActionModalVisible(false);
+  async function updateSelectedSession(form: typeof initialSession) {
+    if (!supabase || !userId || !selectedSession || !form.taskId || !form.title.trim()) {
+      Alert.alert('Check session', 'Task and session title are required.');
+      return false;
+    }
+
+    const blockCount = Number(form.blockCount);
+    const start = parseLocalDateTime(form.date, form.startTime);
+
+    if (!start || !Number.isInteger(blockCount) || blockCount <= 0) {
+      Alert.alert('Check session', 'Use a valid date, start time, and positive block count.');
+      return false;
+    }
+
+    const startIndex = start.getHours() * 2 + (start.getMinutes() >= 30 ? 1 : 0);
+    const endIndex = startIndex + blockCount - 1;
+
+    if (start.getMinutes() % 30 !== 0 || endIndex > 47) {
+      Alert.alert('Check session', 'Sessions must start on a 30-minute block and stay inside the selected day.');
+      return false;
+    }
+
+    const end = new Date(start.getTime() + blockCount * 30 * 60 * 1000);
+    const blockIndexes = Array.from({ length: blockCount }, (_, index) => startIndex + index);
+
+    setSessionSaving(true);
+    await ensureCurrentMonthTimeBlocks(userId, start);
+
+    const { data: blocks, error: blockError } = await supabase
+      .from('time_blocks')
+      .select('id, session_id')
+      .eq('user_id', userId)
+      .eq('block_date', form.date)
+      .in('block_index', blockIndexes);
+
+    if (blockError) {
+      setSessionSaving(false);
+      Alert.alert('Session check failed', blockError.message);
+      return false;
+    }
+
+    if ((blocks ?? []).length !== blockCount || (blocks ?? []).some((block) => block.session_id && block.session_id !== selectedSession.id)) {
+      setSessionSaving(false);
+      Alert.alert('Conflict detected', 'One or more selected time blocks are already occupied.');
+      return false;
+    }
+
+    const { error: clearError } = await supabase
+      .from('time_blocks')
+      .update({ session_id: null })
+      .eq('user_id', userId)
+      .eq('session_id', selectedSession.id);
+
+    if (clearError) {
+      setSessionSaving(false);
+      Alert.alert('Update session failed', clearError.message);
+      return false;
+    }
+
+    const { error: sessionError } = await supabase
+      .from('sessions')
+      .update({
+        task_id: form.taskId,
+        title: form.title.trim(),
+        description: form.description.trim() || null,
+        session_type: form.sessionType,
+        planned_start_time: start.toISOString(),
+        planned_end_time: end.toISOString(),
+        block_count: blockCount,
+      })
+      .eq('user_id', userId)
+      .eq('id', selectedSession.id);
+
+    if (sessionError) {
+      setSessionSaving(false);
+      Alert.alert('Update session failed', sessionError.message);
+      return false;
+    }
+
+    const { error: assignError } = await supabase
+      .from('time_blocks')
+      .update({ session_id: selectedSession.id })
+      .eq('user_id', userId)
+      .eq('block_date', form.date)
+      .in('block_index', blockIndexes);
+
+    setSessionSaving(false);
+
+    if (assignError) {
+      Alert.alert('Assign blocks failed', assignError.message);
+      return false;
+    }
+
+    await loadCalendarData();
+    setSelectedSession(null);
+    return true;
+  }
+
+  async function deleteSelectedSession() {
+    if (!supabase || !userId || !selectedSession) {
+      return;
+    }
+
+    setSessionSaving(true);
+    const { error: clearError } = await supabase
+      .from('time_blocks')
+      .update({ session_id: null })
+      .eq('user_id', userId)
+      .eq('session_id', selectedSession.id);
+
+    if (clearError) {
+      setSessionSaving(false);
+      Alert.alert('Delete session failed', clearError.message);
+      return;
+    }
+
+    const { error: deleteError } = await supabase
+      .from('sessions')
+      .delete()
+      .eq('user_id', userId)
+      .eq('id', selectedSession.id);
+
+    setSessionSaving(false);
+
+    if (deleteError) {
+      Alert.alert('Delete session failed', deleteError.message);
+      return;
+    }
+
+    setSelectedSession(null);
+    loadCalendarData();
   }
 
   async function createCategory() {
@@ -302,22 +492,13 @@ export function CalendarScreen() {
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 148 + insets.bottom }]} style={styles.screen}>
         <View style={styles.header}>
           <Text style={styles.kicker}>BLOCK CALENDAR</Text>
-          <Text style={styles.title}>CALENDAR</Text>
-          <Text style={styles.subtitle}>Plan categories, tasks, and sessions on 30-minute blocks.</Text>
-        </View>
-
-        <View style={styles.viewSwitcher}>
-          {viewOptions.map((option) => (
-            <Pressable
-              accessibilityRole="tab"
-              accessibilityState={{ selected: view === option }}
-              key={option}
-              onPress={() => setView(option)}
-              style={[styles.viewOption, view === option && styles.viewOptionActive]}
-            >
-              <Text style={[styles.viewOptionText, view === option && styles.viewOptionTextActive]}>{option.toUpperCase()}</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>CALENDAR</Text>
+            <Pressable accessibilityLabel="Open task sidebar" accessibilityRole="button" onPress={() => setTaskSidebarVisible(true)} style={styles.sidebarIconButton}>
+              <Ionicons color={colors.text} name="list-outline" size={24} />
             </Pressable>
-          ))}
+          </View>
+          <Text style={styles.subtitle}>Plan categories, tasks, and sessions on 30-minute blocks.</Text>
         </View>
 
         {loading ? (
@@ -327,20 +508,15 @@ export function CalendarScreen() {
           </View>
         ) : null}
 
-        {view === 'day' ? <DayView date={today} sessions={sessions} /> : null}
-        {view === 'week' ? <WeekView days={weekDays} sessions={sessions} /> : null}
-        {view === 'month' ? <MonthView baseDate={today} days={monthDays} sessions={sessions} /> : null}
+        {view === 'day' ? <DayView date={today} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+        {view === 'week' ? <WeekView days={weekDays} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+        {view === 'month' ? <MonthView baseDate={today} days={monthDays} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
       </ScrollView>
 
-      <Pressable accessibilityRole="button" onPress={() => setActionModalVisible(true)} style={styles.fab}>
+      <Pressable accessibilityRole="button" onPress={() => setCreationMode('session')} style={styles.fab}>
         <Ionicons color={colors.paper} name="add" size={34} />
       </Pressable>
 
-      <ActionModal
-        onClose={() => setActionModalVisible(false)}
-        onOpenMode={openCreateMode}
-        visible={actionModalVisible}
-      />
       <CreateModal
         categoryForm={categoryForm}
         creationMode={creationMode}
@@ -357,45 +533,49 @@ export function CalendarScreen() {
         taskTypes={taskTypes}
         tasks={tasks}
       />
+      <TaskSidebar
+        categoryFilter={categoryFilter}
+        categoryMenuVisible={categoryMenuVisible}
+        onClose={() => setTaskSidebarVisible(false)}
+        onSelectCategory={(value) => {
+          setCategoryFilter(value);
+          if (taskFilter && value && tasks.find((task) => task.id === taskFilter)?.task_type_id !== value) {
+            setTaskFilter('');
+          }
+          setCategoryMenuVisible(false);
+        }}
+        onSelectTask={(value) => {
+          setTaskFilter(value);
+          setTaskMenuVisible(false);
+        }}
+        onToggleCategoryMenu={() => {
+          setCategoryMenuVisible((value) => !value);
+          setTaskMenuVisible(false);
+        }}
+        onToggleTaskMenu={() => {
+          setTaskMenuVisible((value) => !value);
+          setCategoryMenuVisible(false);
+        }}
+        onViewChange={setView}
+        sessionCount={filteredSessions.length}
+        taskFilter={taskFilter}
+        taskMenuVisible={taskMenuVisible}
+        taskTypes={taskTypes}
+        tasks={filteredTasks}
+        totalTasks={tasks}
+        translateX={sidebarTranslate}
+        view={view}
+        visible={taskSidebarVisible}
+      />
+      <SessionDetailModal
+        onClose={() => setSelectedSession(null)}
+        onDelete={deleteSelectedSession}
+        onUpdate={updateSelectedSession}
+        saving={sessionSaving}
+        session={selectedSession}
+        tasks={tasks}
+      />
     </View>
-  );
-}
-
-function ActionModal({
-  onClose,
-  onOpenMode,
-  visible,
-}: {
-  onClose: () => void;
-  onOpenMode: (mode: CreationMode) => void;
-  visible: boolean;
-}) {
-  return (
-    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
-      <Pressable accessibilityRole="button" onPress={onClose} style={styles.modalBackdrop}>
-        <Pressable onPress={(event) => event.stopPropagation()} style={styles.modalCard}>
-          <Text style={styles.modalKicker}>CREATE</Text>
-          <Text style={styles.modalTitle}>ADD BLOCK DATA</Text>
-          <View style={styles.creationStack}>
-            <CreationButton label="CATEGORY" subtitle="Alias for task type" onPress={() => onOpenMode('category')} />
-            <CreationButton label="TASK" subtitle="Work item with priority" onPress={() => onOpenMode('task')} />
-            <CreationButton label="SESSION" subtitle="Place a task on time blocks" onPress={() => onOpenMode('session')} />
-          </View>
-          <Pressable accessibilityRole="button" onPress={onClose} style={[styles.secondaryButton, styles.fullButton]}>
-            <Text style={styles.secondaryButtonText}>CANCEL</Text>
-          </Pressable>
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-function CreationButton({ label, onPress, subtitle }: { label: string; onPress: () => void; subtitle: string }) {
-  return (
-    <Pressable accessibilityRole="button" onPress={onPress} style={styles.creationButton}>
-      <Text style={styles.creationLabel}>{label}</Text>
-      <Text style={styles.creationSubtitle}>{subtitle}</Text>
-    </Pressable>
   );
 }
 
@@ -574,7 +754,284 @@ function ChoiceGroup({
   );
 }
 
-function DayView({ date, sessions }: { date: Date; sessions: SessionRow[] }) {
+function TaskSidebar({
+  categoryFilter,
+  categoryMenuVisible,
+  onClose,
+  onSelectCategory,
+  onSelectTask,
+  onToggleCategoryMenu,
+  onToggleTaskMenu,
+  onViewChange,
+  sessionCount,
+  taskFilter,
+  taskMenuVisible,
+  taskTypes,
+  tasks,
+  totalTasks,
+  translateX,
+  view,
+  visible,
+}: {
+  categoryFilter: string;
+  categoryMenuVisible: boolean;
+  onClose: () => void;
+  onSelectCategory: (value: string) => void;
+  onSelectTask: (value: string) => void;
+  onToggleCategoryMenu: () => void;
+  onToggleTaskMenu: () => void;
+  onViewChange: (value: CalendarView) => void;
+  sessionCount: number;
+  taskFilter: string;
+  taskMenuVisible: boolean;
+  taskTypes: TaskTypeRow[];
+  tasks: TaskRow[];
+  totalTasks: TaskRow[];
+  translateX: Animated.Value;
+  view: CalendarView;
+  visible: boolean;
+}) {
+  const selectedType = taskTypes.find((type) => type.id === categoryFilter);
+  const selectedTask = totalTasks.find((task) => task.id === taskFilter);
+
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <View style={styles.sidebarLayer}>
+        <Pressable accessibilityRole="button" onPress={onClose} style={styles.sidebarShade} />
+        <Animated.View style={[styles.sidebarPanel, { transform: [{ translateX }] }]}>
+          <View style={styles.sidebarHeader}>
+            <View>
+              <Text style={styles.modalKicker}>SESSION FILTER</Text>
+              <Text style={styles.sidebarTitle}>FILTERS</Text>
+            </View>
+            <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
+              <Ionicons color={colors.text} name="close" size={24} />
+            </Pressable>
+          </View>
+
+          <View style={styles.dropdownWrap}>
+            <Text style={styles.sidebarSectionLabel}>CALENDAR VIEW</Text>
+            <View style={styles.sidebarViewSwitcher}>
+              {viewOptions.map((option) => (
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: view === option }}
+                  key={option}
+                  onPress={() => onViewChange(option)}
+                  style={[styles.sidebarViewOption, view === option && styles.sidebarViewOptionActive]}
+                >
+                  <Text style={[styles.sidebarViewText, view === option && styles.sidebarViewTextActive]}>{option.toUpperCase()}</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.sidebarSectionLabel}>CATEGORIES</Text>
+            <Pressable accessibilityRole="button" onPress={onToggleCategoryMenu} style={styles.dropdownButton}>
+              <Text style={styles.dropdownText}>{selectedType?.name ?? 'CATEGORIES'}</Text>
+              <Ionicons color={colors.text} name={categoryMenuVisible ? 'chevron-up' : 'chevron-down'} size={18} />
+            </Pressable>
+            {categoryMenuVisible ? (
+              <View style={styles.dropdownMenu}>
+                <Pressable accessibilityRole="button" onPress={() => onSelectCategory('')} style={styles.dropdownItem}>
+                  <Text style={styles.dropdownItemText}>ALL</Text>
+                </Pressable>
+                {taskTypes.map((type) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={type.id}
+                    onPress={() => onSelectCategory(type.id)}
+                    style={styles.dropdownItem}
+                  >
+                    <View style={[styles.typeDot, { backgroundColor: type.color || colors.surface }]} />
+                    <Text style={styles.dropdownItemText}>{type.name}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+
+            <Text style={styles.sidebarSectionLabel}>TASKS</Text>
+            <Pressable accessibilityRole="button" onPress={onToggleTaskMenu} style={styles.dropdownButton}>
+              <Text style={styles.dropdownText}>{selectedTask?.title ?? 'TASKS'}</Text>
+              <Ionicons color={colors.text} name={taskMenuVisible ? 'chevron-up' : 'chevron-down'} size={18} />
+            </Pressable>
+            {taskMenuVisible ? (
+              <View style={styles.dropdownMenu}>
+                <Pressable accessibilityRole="button" onPress={() => onSelectTask('')} style={styles.dropdownItem}>
+                  <Text style={styles.dropdownItemText}>ALL</Text>
+                </Pressable>
+                {tasks.map((task) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={task.id}
+                    onPress={() => onSelectTask(task.id)}
+                    style={styles.dropdownItem}
+                  >
+                    <Ionicons color={colors.primary} name="square-outline" size={13} />
+                    <Text numberOfLines={1} style={styles.dropdownItemText}>{task.title}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+          </View>
+          <View style={styles.sidebarFilterSummary}>
+            <Text style={styles.sidebarEmptyTitle}>{sessionCount}</Text>
+            <Text style={styles.sidebarEmptyText}>SESSIONS MATCH CURRENT FILTER</Text>
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+function SessionDetailModal({
+  onClose,
+  onDelete,
+  onUpdate,
+  saving,
+  session,
+  tasks,
+}: {
+  onClose: () => void;
+  onDelete: () => void;
+  onUpdate: (form: typeof initialSession) => Promise<boolean>;
+  saving: boolean;
+  session: SessionRow | null;
+  tasks: TaskRow[];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState(initialSession);
+
+  useEffect(() => {
+    if (!session) {
+      return;
+    }
+
+    setEditing(false);
+    setForm(sessionToForm(session));
+  }, [session]);
+
+  if (!session) {
+    return null;
+  }
+
+  function confirmDelete() {
+    Alert.alert(
+      'Delete session',
+      'This will remove the session and free its time blocks.',
+      [
+        { style: 'cancel', text: 'Cancel' },
+        { onPress: onDelete, style: 'destructive', text: 'Delete' },
+      ],
+    );
+  }
+
+  async function saveEdit() {
+    const updated = await onUpdate(form);
+    if (updated) {
+      setEditing(false);
+    }
+  }
+
+  return (
+    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.sessionDetailCard}>
+          <View style={styles.modalHeader}>
+            <View style={styles.sessionDetailTitleWrap}>
+              <Text style={styles.modalKicker}>SESSION DETAIL</Text>
+              <Text style={styles.sessionDetailTitle}>{session.title}</Text>
+            </View>
+            <Pressable accessibilityRole="button" onPress={onClose} style={styles.closeButton}>
+              <Ionicons color={colors.text} name="close" size={24} />
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.sessionDetailBody} showsVerticalScrollIndicator={false}>
+            {editing ? (
+              <>
+                <ChoiceGroup
+                  label="TASK"
+                  options={tasks.map((task) => ({ label: task.title, value: task.id }))}
+                  value={form.taskId}
+                  onChange={(taskId) => setForm({ ...form, taskId })}
+                />
+                <Field label="TITLE" onChangeText={(title) => setForm({ ...form, title })} value={form.title} />
+                <Field label="DESCRIPTION" onChangeText={(description) => setForm({ ...form, description })} value={form.description} />
+                <ChoiceGroup
+                  label="SESSION TYPE"
+                  options={sessionTypes.map((type) => ({ label: type.toUpperCase(), value: type }))}
+                  value={form.sessionType}
+                  onChange={(sessionType) => setForm({ ...form, sessionType: sessionType as SessionType })}
+                />
+                <Field label="DATE YYYY-MM-DD" onChangeText={(date) => setForm({ ...form, date })} value={form.date} />
+                <Field label="START HH:MM" onChangeText={(startTime) => setForm({ ...form, startTime })} value={form.startTime} />
+                <Field keyboardType="numeric" label="BLOCK COUNT" onChangeText={(blockCount) => setForm({ ...form, blockCount })} value={form.blockCount} />
+              </>
+            ) : (
+              <>
+                <View style={styles.sessionDetailHero}>
+                  <Text style={styles.sessionDetailDate}>{formatLongDate(new Date(session.planned_start_time))}</Text>
+                  <Text style={styles.sessionDetailTime}>{formatTimeRange(session)}</Text>
+                </View>
+                <InfoLine label="TASK" value={session.tasks?.title ?? 'NO TASK'} />
+                <InfoLine label="TYPE" value={session.tasks?.task_types?.name ?? 'NO TASK TYPE'} />
+                <InfoLine label="SESSION MODE" value={session.session_type.toUpperCase()} />
+                <InfoLine label="CHECK IN" value={session.checked_in ? 'DONE' : 'PENDING'} />
+                {session.description ? (
+                  <View style={styles.infoBlock}>
+                    <Text style={styles.infoLabel}>DESCRIPTION</Text>
+                    <Text style={styles.infoValue}>{session.description}</Text>
+                  </View>
+                ) : null}
+              </>
+            )}
+          </ScrollView>
+          <View style={styles.sessionDetailActions}>
+            {editing ? (
+              <>
+                <Pressable accessibilityRole="button" disabled={saving} onPress={() => setEditing(false)} style={styles.secondaryButton}>
+                  <Text style={styles.secondaryButtonText}>CANCEL</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" disabled={saving} onPress={saveEdit} style={styles.modalButton}>
+                  {saving ? <ActivityIndicator color={colors.paper} /> : <Text style={styles.modalButtonText}>SAVE</Text>}
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Pressable accessibilityRole="button" disabled={saving} onPress={confirmDelete} style={styles.dangerButton}>
+                  <Text style={styles.dangerButtonText}>DELETE</Text>
+                </Pressable>
+                <Pressable accessibilityRole="button" disabled={saving} onPress={() => setEditing(true)} style={styles.modalButton}>
+                  <Text style={styles.modalButtonText}>EDIT</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function InfoLine({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.infoLine}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text style={styles.infoValue}>{value}</Text>
+    </View>
+  );
+}
+
+function DayView({
+  date,
+  now,
+  onSelectSession,
+  sessions,
+}: {
+  date: Date;
+  now: Date;
+  onSelectSession: (session: SessionRow) => void;
+  sessions: SessionRow[];
+}) {
   const daySessions = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), date));
 
   return (
@@ -588,12 +1045,25 @@ function DayView({ date, sessions }: { date: Date; sessions: SessionRow[] }) {
           <View key={hour} style={styles.hourRow}>
             <Text style={styles.hourLabel}>{formatHour(hour)}</Text>
             <View style={styles.hourBlocks}>
-              <View style={styles.halfBlock}>
-                {daySessions.filter((item) => new Date(item.planned_start_time).getHours() === hour).map((item) => (
-                  <SessionChip key={item.id} session={item} />
-                ))}
-              </View>
+              <View pointerEvents="none" style={styles.halfBlock} />
               <View style={styles.halfBlockMuted} />
+              {isSameDay(date, now) && now.getHours() === hour ? (
+                <CurrentTimeLine blockHeight={dayBlockHeight} now={now} showDot />
+              ) : null}
+              {daySessions.filter((item) => new Date(item.planned_start_time).getHours() === hour).map((item) => (
+                <SessionChip
+                  key={item.id}
+                  onPress={() => onSelectSession(item)}
+                  session={item}
+                  style={[
+                    styles.sessionChipFloating,
+                    {
+                      height: getSessionBlockHeight(item, dayBlockHeight),
+                      top: getSessionTopOffset(item, dayBlockHeight),
+                    },
+                  ]}
+                />
+              ))}
             </View>
           </View>
         ))}
@@ -602,7 +1072,17 @@ function DayView({ date, sessions }: { date: Date; sessions: SessionRow[] }) {
   );
 }
 
-function WeekView({ days, sessions }: { days: Date[]; sessions: SessionRow[] }) {
+function WeekView({
+  days,
+  now,
+  onSelectSession,
+  sessions,
+}: {
+  days: Date[];
+  now: Date;
+  onSelectSession: (session: SessionRow) => void;
+  sessions: SessionRow[];
+}) {
   return (
     <View style={styles.panel}>
       <View style={styles.weekHeader}>
@@ -627,7 +1107,23 @@ function WeekView({ days, sessions }: { days: Date[]; sessions: SessionRow[] }) 
               return (
                 <View key={`${day.toISOString()}-${hour}`} style={styles.weekCell}>
                   <View style={styles.weekHalfLine} />
-                  {cellSessions.slice(0, 1).map((item) => <SessionDot key={item.id} session={item} />)}
+                  {isSameDay(day, now) && now.getHours() === hour ? (
+                    <CurrentTimeLine blockHeight={weekBlockHeight} now={now} />
+                  ) : null}
+                  {cellSessions.slice(0, 1).map((item) => (
+                    <SessionDot
+                      key={item.id}
+                      onPress={() => onSelectSession(item)}
+                      session={item}
+                      style={[
+                        styles.sessionDotFloating,
+                        {
+                          height: getSessionBlockHeight(item, weekBlockHeight),
+                          top: getSessionTopOffset(item, weekBlockHeight),
+                        },
+                      ]}
+                    />
+                  ))}
                 </View>
               );
             })}
@@ -638,7 +1134,33 @@ function WeekView({ days, sessions }: { days: Date[]; sessions: SessionRow[] }) 
   );
 }
 
-function MonthView({ baseDate, days, sessions }: { baseDate: Date; days: Date[]; sessions: SessionRow[] }) {
+function CurrentTimeLine({
+  blockHeight,
+  now,
+  showDot = false,
+}: {
+  blockHeight: number;
+  now: Date;
+  showDot?: boolean;
+}) {
+  return (
+    <View pointerEvents="none" style={[styles.currentTimeLine, { top: getCurrentTimeTopOffset(now, blockHeight) }]}>
+      {showDot ? <View style={styles.currentTimeDot} /> : null}
+    </View>
+  );
+}
+
+function MonthView({
+  baseDate,
+  days,
+  onSelectSession,
+  sessions,
+}: {
+  baseDate: Date;
+  days: Date[];
+  onSelectSession: (session: SessionRow) => void;
+  sessions: SessionRow[];
+}) {
   return (
     <View style={styles.panel}>
       <View style={styles.monthHeader}>
@@ -650,17 +1172,24 @@ function MonthView({ baseDate, days, sessions }: { baseDate: Date; days: Date[];
         {days.map((day, index) => {
           const isCurrentMonth = day.getMonth() === baseDate.getMonth();
           const isToday = isSameDay(day, baseDate);
-          const count = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), day)).length;
+          const daySessions = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), day));
+          const count = daySessions.length;
 
           return (
-            <View key={`${day.toISOString()}-${index}`} style={[styles.monthCell, !isCurrentMonth && styles.monthCellMuted]}>
+            <Pressable
+              accessibilityRole="button"
+              disabled={daySessions.length === 0}
+              key={`${day.toISOString()}-${index}`}
+              onPress={() => onSelectSession(daySessions[0])}
+              style={[styles.monthCell, !isCurrentMonth && styles.monthCellMuted]}
+            >
               <Text style={[styles.monthDate, isToday && styles.monthDateToday]}>{day.getDate()}</Text>
               <View style={styles.monthBlockMeter}>
                 {[0, 1, 2].map((dot) => (
                   <View key={dot} style={[styles.monthBlockDot, dot < count && styles.monthBlockDotActive]} />
                 ))}
               </View>
-            </View>
+            </Pressable>
           );
         })}
       </View>
@@ -668,20 +1197,43 @@ function MonthView({ baseDate, days, sessions }: { baseDate: Date; days: Date[];
   );
 }
 
-function SessionChip({ session }: { session: SessionRow }) {
+function SessionChip({
+  onPress,
+  session,
+  style,
+}: {
+  onPress: () => void;
+  session: SessionRow;
+  style?: StyleProp<ViewStyle>;
+}) {
   return (
-    <View style={styles.sessionChip}>
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[styles.sessionChip, { backgroundColor: getSessionColor(session, colors.surface) }, style]}
+    >
       <Text style={styles.sessionChipTitle}>{session.title}</Text>
-      <Text style={styles.sessionChipMeta}>{formatTimeRange(session)}</Text>
-    </View>
+    </Pressable>
   );
 }
 
-function SessionDot({ session }: { session: SessionRow }) {
+function SessionDot({
+  onPress,
+  session,
+  style,
+}: {
+  onPress: () => void;
+  session: SessionRow;
+  style?: StyleProp<ViewStyle>;
+}) {
   return (
-    <View style={styles.sessionDot}>
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[styles.sessionDot, { backgroundColor: getSessionColor(session, colors.primary) }, style]}
+    >
       <Text numberOfLines={1} style={styles.sessionDotText}>{session.title}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -754,6 +1306,20 @@ function parseLocalDateTime(dateValue: string, timeValue: string) {
   return new Date(year, month - 1, day, hour, minute);
 }
 
+function sessionToForm(session: SessionRow) {
+  const start = new Date(session.planned_start_time);
+
+  return {
+    taskId: session.task_id,
+    title: session.title,
+    description: session.description ?? '',
+    sessionType: session.session_type,
+    date: toDateInput(start),
+    startTime: formatClock(start),
+    blockCount: String(session.block_count),
+  };
+}
+
 function toDateInput(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -778,6 +1344,23 @@ function formatTimeRange(session: SessionRow) {
 
 function formatClock(date: Date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function getSessionBlockHeight(session: SessionRow, blockHeight: number) {
+  return Math.max(blockHeight - 4, session.block_count * blockHeight - 4);
+}
+
+function getSessionTopOffset(session: SessionRow, blockHeight: number) {
+  const start = new Date(session.planned_start_time);
+  return start.getMinutes() >= 30 ? blockHeight : 0;
+}
+
+function getCurrentTimeTopOffset(now: Date, blockHeight: number) {
+  return (now.getMinutes() / 30) * blockHeight;
+}
+
+function getSessionColor(session: SessionRow, fallback: string) {
+  return session.tasks?.task_types?.color || fallback;
 }
 
 function isSameDay(left: Date, right: Date) {
@@ -812,34 +1395,25 @@ const styles = StyleSheet.create({
     fontSize: 54,
     lineHeight: 62,
   },
+  titleRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  sidebarIconButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderWidth: 2,
+    height: 46,
+    justifyContent: 'center',
+    width: 46,
+  },
   subtitle: {
     color: colors.textMuted,
     fontFamily: 'Inter_700Bold',
     fontSize: 15,
     lineHeight: 21,
-  },
-  viewSwitcher: {
-    borderColor: colors.border,
-    borderWidth: 2,
-    flexDirection: 'row',
-    marginBottom: 18,
-  },
-  viewOption: {
-    flex: 1,
-    paddingVertical: 13,
-  },
-  viewOptionActive: {
-    backgroundColor: colors.primary,
-  },
-  viewOptionText: {
-    color: colors.text,
-    fontFamily: 'IBMPlexMono_700Bold',
-    fontSize: 13,
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-  viewOptionTextActive: {
-    color: colors.paper,
   },
   loadingPanel: {
     alignItems: 'center',
@@ -898,6 +1472,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderLeftWidth: 2,
     flex: 1,
+    position: 'relative',
   },
   halfBlock: {
     borderBottomColor: colors.border,
@@ -910,6 +1485,25 @@ const styles = StyleSheet.create({
     borderBottomWidth: 2,
     flex: 1,
   },
+  currentTimeLine: {
+    backgroundColor: colors.danger,
+    height: 2,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    zIndex: 5,
+  },
+  currentTimeDot: {
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderRadius: 5,
+    borderWidth: 1,
+    height: 10,
+    left: -6,
+    position: 'absolute',
+    top: -4,
+    width: 10,
+  },
   sessionChip: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
@@ -917,15 +1511,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 5,
   },
+  sessionChipFloating: {
+    left: 4,
+    position: 'absolute',
+    right: 4,
+    zIndex: 3,
+  },
   sessionChipTitle: {
     color: colors.text,
     fontFamily: 'Inter_700Bold',
     fontSize: 12,
-  },
-  sessionChipMeta: {
-    color: colors.textMuted,
-    fontFamily: 'IBMPlexMono_700Bold',
-    fontSize: 9,
   },
   weekHeader: {
     flexDirection: 'row',
@@ -972,6 +1567,7 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2,
     flex: 1,
     padding: 2,
+    position: 'relative',
   },
   weekHalfLine: {
     borderBottomColor: colors.surfaceMuted,
@@ -982,7 +1578,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     borderColor: colors.border,
     borderWidth: 1,
+    justifyContent: 'center',
     paddingHorizontal: 2,
+  },
+  sessionDotFloating: {
+    left: 2,
+    position: 'absolute',
+    right: 2,
+    zIndex: 3,
   },
   sessionDotText: {
     color: colors.paper,
@@ -1086,6 +1689,264 @@ const styles = StyleSheet.create({
     width: '100%',
     ...shadowHard,
   },
+  sidebarLayer: {
+    flex: 1,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+  },
+  sidebarShade: {
+    backgroundColor: 'rgba(22, 23, 18, 0.32)',
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
+  },
+  sidebarPanel: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderLeftWidth: 3,
+    height: '100%',
+    maxWidth: 390,
+    paddingTop: 34,
+    width: '86%',
+    ...shadowHard,
+  },
+  sidebarHeader: {
+    alignItems: 'flex-start',
+    borderBottomColor: colors.border,
+    borderBottomWidth: 3,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingBottom: 14,
+    paddingHorizontal: 18,
+  },
+  sidebarTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 42,
+    lineHeight: 48,
+  },
+  dropdownWrap: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: 3,
+    padding: 18,
+  },
+  sidebarSectionLabel: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  sidebarViewSwitcher: {
+    borderColor: colors.border,
+    borderWidth: 2,
+    flexDirection: 'row',
+    marginBottom: 6,
+  },
+  sidebarViewOption: {
+    flex: 1,
+    paddingVertical: 10,
+  },
+  sidebarViewOptionActive: {
+    backgroundColor: colors.primary,
+  },
+  sidebarViewText: {
+    color: colors.text,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    textAlign: 'center',
+  },
+  sidebarViewTextActive: {
+    color: colors.paper,
+  },
+  dropdownButton: {
+    alignItems: 'center',
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+    borderWidth: 2,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  dropdownText: {
+    color: colors.text,
+    flex: 1,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  dropdownMenu: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderWidth: 2,
+    marginTop: 8,
+  },
+  dropdownItem: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    minHeight: 42,
+    paddingHorizontal: 12,
+  },
+  dropdownItemText: {
+    color: colors.text,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+  },
+  typeDot: {
+    borderColor: colors.border,
+    borderWidth: 1,
+    height: 13,
+    width: 13,
+  },
+  sidebarBody: {
+    gap: 10,
+    padding: 18,
+    paddingBottom: 120,
+  },
+  sidebarTask: {
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderWidth: 2,
+    padding: 12,
+  },
+  sidebarTaskTitle: {
+    color: colors.text,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 15,
+    lineHeight: 20,
+  },
+  sidebarTaskMeta: {
+    color: colors.primary,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginTop: 6,
+  },
+  sidebarTaskDescription: {
+    color: colors.textMuted,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 12,
+    lineHeight: 17,
+    marginTop: 8,
+  },
+  sidebarEmpty: {
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+    borderWidth: 2,
+    padding: 14,
+  },
+  sidebarEmptyTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 28,
+  },
+  sidebarEmptyText: {
+    color: colors.textMuted,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  sidebarFilterSummary: {
+    backgroundColor: colors.bg,
+    borderColor: colors.border,
+    borderWidth: 2,
+    margin: 18,
+    padding: 14,
+  },
+  sessionDetailCard: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderWidth: 3,
+    maxHeight: '86%',
+    maxWidth: 460,
+    overflow: 'hidden',
+    width: '100%',
+    ...shadowHard,
+  },
+  sessionDetailTitleWrap: {
+    flex: 1,
+  },
+  sessionDetailTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 34,
+    lineHeight: 40,
+  },
+  sessionDetailBody: {
+    flexGrow: 0,
+    padding: 18,
+  },
+  sessionDetailHero: {
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 2,
+    marginBottom: 12,
+    padding: 12,
+  },
+  sessionDetailDate: {
+    color: colors.text,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  sessionDetailTime: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 32,
+    lineHeight: 38,
+    marginTop: 2,
+  },
+  infoLine: {
+    borderBottomColor: colors.border,
+    borderBottomWidth: 2,
+    paddingVertical: 10,
+  },
+  infoBlock: {
+    paddingTop: 12,
+  },
+  infoLabel: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginBottom: 4,
+  },
+  infoValue: {
+    color: colors.text,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 15,
+    lineHeight: 21,
+  },
+  sessionDetailActions: {
+    borderTopColor: colors.border,
+    borderTopWidth: 3,
+    flexDirection: 'row',
+    gap: 12,
+    padding: 18,
+  },
+  dangerButton: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderWidth: 3,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 52,
+    ...shadowHard,
+  },
+  dangerButtonText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 22,
+  },
   modalHeader: {
     alignItems: 'flex-start',
     borderBottomColor: colors.border,
@@ -1123,31 +1984,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Anton_400Regular',
     fontSize: 36,
     lineHeight: 42,
-  },
-  creationStack: {
-    borderBottomColor: colors.border,
-    borderBottomWidth: 2,
-    borderTopColor: colors.border,
-    borderTopWidth: 2,
-    marginTop: 16,
-  },
-  creationButton: {
-    borderColor: colors.border,
-    borderBottomWidth: 2,
-    paddingHorizontal: 2,
-    paddingVertical: 16,
-  },
-  creationLabel: {
-    color: colors.text,
-    fontFamily: 'Anton_400Regular',
-    fontSize: 28,
-    lineHeight: 34,
-  },
-  creationSubtitle: {
-    color: colors.textMuted,
-    fontFamily: 'Inter_700Bold',
-    fontSize: 12,
-    lineHeight: 17,
   },
   fieldGroup: {
     marginTop: 16,

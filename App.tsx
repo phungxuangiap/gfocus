@@ -13,6 +13,7 @@ import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 import { AuthScreen } from './components/AuthScreen';
 import { CalendarScreen } from './components/CalendarScreen';
 import { ProfileScreen } from './components/ProfileScreen';
+import { TaskScreen } from './components/TaskScreen';
 import { colors, shadowHard } from './constants/theme';
 import { supabase } from './lib/supabase';
 import { useAppDispatch, useAppSelector } from './store/hooks';
@@ -95,6 +96,7 @@ function MainShell() {
     <SafeAreaView style={[styles.appScreen, { paddingTop: insets.top }]}>
       <View style={styles.scene}>
         {activeTab === 'calendar' ? <CalendarScreen /> : null}
+        {activeTab === 'task' ? <TaskScreen /> : null}
         {activeTab === 'profile' ? <ProfileScreen /> : null}
       </View>
       <View style={[styles.bottomNav, { paddingBottom: Math.max(insets.bottom, 10) }]}>
@@ -115,6 +117,15 @@ function MainShell() {
         >
           <Ionicons color={activeTab === 'profile' ? colors.paper : colors.text} name="person-circle-outline" size={24} />
           <Text style={[styles.navLabel, activeTab === 'profile' && styles.navLabelActive]}>Profile</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'task' }}
+          onPress={() => dispatch(setActiveTab('task'))}
+          style={[styles.navItem, activeTab === 'task' && styles.navItemActive]}
+        >
+          <Ionicons color={activeTab === 'task' ? colors.paper : colors.text} name="list-circle-outline" size={24} />
+          <Text style={[styles.navLabel, activeTab === 'task' && styles.navLabelActive]}>Task</Text>
         </Pressable>
       </View>
       <StatusBar backgroundColor="transparent" style="dark" translucent />
