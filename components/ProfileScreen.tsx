@@ -14,6 +14,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, shadowHard } from '../constants/theme';
+import { sendTestNotification } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { toggleAppMode } from '../store/appSlice';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
@@ -248,6 +249,15 @@ export function ProfileScreen() {
     Alert.alert('Settings saved', 'Your user settings are up to date.');
   }
 
+  async function sendNotificationTest() {
+    try {
+      await sendTestNotification();
+      Alert.alert('Notification scheduled', 'A test notification should appear in about 1 second.');
+    } catch (error) {
+      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not send test notification.');
+    }
+  }
+
   if (loading) {
     return (
       <View style={styles.loadingPanel}>
@@ -346,6 +356,14 @@ export function ProfileScreen() {
               <View style={[styles.modeOption, appMode === 'focus' && styles.modeOptionActive]}>
                 <Text style={[styles.modeText, appMode === 'focus' && styles.modeTextActive]}>FOCUS</Text>
               </View>
+            </Pressable>
+          </View>
+
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>NOTIFICATION TEST</Text>
+            <Text style={styles.helperText}>Send a local notification to verify notification permission and scheduling.</Text>
+            <Pressable accessibilityRole="button" onPress={sendNotificationTest} style={styles.notificationButton}>
+              <Text style={styles.notificationButtonText}>SEND NOTIFICATION</Text>
             </Pressable>
           </View>
 
@@ -665,6 +683,21 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 24,
+  },
+  notificationButton: {
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    borderWidth: 3,
+    justifyContent: 'center',
+    marginTop: 14,
+    minHeight: 54,
+    ...shadowHard,
+  },
+  notificationButtonText: {
+    color: colors.text,
     fontFamily: 'Anton_400Regular',
     fontSize: 24,
   },

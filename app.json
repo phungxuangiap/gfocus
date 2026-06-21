@@ -16,7 +16,8 @@
       "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
         "backgroundColor": "#eeeeea"
-      }
+      },
+      "package": "com.alexgi0806.gfocus"
     },
     "androidStatusBar": {
       "barStyle": "dark-content",
