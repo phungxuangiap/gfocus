@@ -74,3 +74,5 @@ drop trigger if exists set_user_settings_updated_at on public.user_settings;
 create trigger set_user_settings_updated_at
 before update on public.user_settings
 for each row execute function public.set_updated_at();
+
+notify pgrst, 'reload schema';

@@ -11,6 +11,7 @@ import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 
 import { AuthScreen } from './components/AuthScreen';
+import { CalendarScreen } from './components/CalendarScreen';
 import { ProfileScreen } from './components/ProfileScreen';
 import { colors, shadowHard } from './constants/theme';
 import { supabase } from './lib/supabase';
@@ -92,8 +93,20 @@ function MainShell() {
 
   return (
     <SafeAreaView style={[styles.appScreen, { paddingTop: insets.top }]}>
-      <View style={styles.scene}>{activeTab === 'profile' ? <ProfileScreen /> : null}</View>
+      <View style={styles.scene}>
+        {activeTab === 'calendar' ? <CalendarScreen /> : null}
+        {activeTab === 'profile' ? <ProfileScreen /> : null}
+      </View>
       <View style={[styles.bottomNav, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'calendar' }}
+          onPress={() => dispatch(setActiveTab('calendar'))}
+          style={[styles.navItem, activeTab === 'calendar' && styles.navItemActive]}
+        >
+          <Ionicons color={activeTab === 'calendar' ? colors.paper : colors.text} name="calendar-outline" size={24} />
+          <Text style={[styles.navLabel, activeTab === 'calendar' && styles.navLabelActive]}>Calendar</Text>
+        </Pressable>
         <Pressable
           accessibilityRole="tab"
           accessibilityState={{ selected: activeTab === 'profile' }}
@@ -130,7 +143,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 3,
     bottom: 0,
     flexDirection: 'row',
-    justifyContent: 'flex-start',
+    gap: 10,
+    justifyContent: 'space-between',
     left: 0,
     minHeight: 76,
     paddingHorizontal: 16,
@@ -144,7 +158,9 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     borderWidth: 2,
     flexDirection: 'row',
+    flex: 1,
     gap: 8,
+    justifyContent: 'center',
     minHeight: 48,
     paddingHorizontal: 14,
   },
