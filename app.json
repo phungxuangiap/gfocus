@@ -17,7 +17,10 @@
       "adaptiveIcon": {
         "backgroundColor": "#eeeeea"
       },
-      "package": "com.alexgi0806.gfocus"
+      "package": "com.alexgi0806.gfocus",
+      "permissions": [
+        "USE_FULL_SCREEN_INTENT"
+      ]
     },
     "androidStatusBar": {
       "barStyle": "dark-content",
@@ -33,7 +36,17 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-font"
+      "expo-font",
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "sounds": [
+            "./assets/sounds/checkin_sound.mp3"
+          ]
+        }
+      ],
+      "expo-asset"
     ]
   }
 }

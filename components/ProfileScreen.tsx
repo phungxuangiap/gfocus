@@ -14,7 +14,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, shadowHard } from '../constants/theme';
-import { sendTestNotification } from '../lib/notifications';
+import {
+  addSessionStartCheckInActionListener,
+  sendSessionStartStrictTestNotification,
+  sendTestNotification,
+  stopSessionStartRepeatingSound,
+} from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { toggleAppMode } from '../store/appSlice';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
@@ -62,6 +67,7 @@ export function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmSettingsVisible, setConfirmSettingsVisible] = useState(false);
+  const [strictCheckInVisible, setStrictCheckInVisible] = useState(false);
   const [savedSettings, setSavedSettings] = useState<SettingsSnapshot>(defaultSettings);
 
   const userId = session?.user.id;
@@ -170,6 +176,17 @@ export function ProfileScreen() {
     loadProfile();
   }, [session, userId]);
 
+  useEffect(() => {
+    const subscription = addSessionStartCheckInActionListener(() => {
+      setStrictCheckInVisible(false);
+    });
+
+    return () => {
+      subscription.remove();
+      stopSessionStartRepeatingSound('profile screen unmounted');
+    };
+  }, []);
+
   function updateForm<Key extends keyof ProfileForm>(key: Key, value: ProfileForm[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -250,12 +267,41 @@ export function ProfileScreen() {
   }
 
   async function sendNotificationTest() {
+    if (!userId) {
+      Alert.alert('Notification failed', 'Missing current user.');
+      return;
+    }
+
     try {
-      await sendTestNotification();
-      Alert.alert('Notification scheduled', 'A test notification should appear in about 1 second.');
+      await sendTestNotification(userId);
+      Alert.alert('Notification scheduled', 'A test notification should appear in about 1 second and was stored in the database.');
     } catch (error) {
       Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not send test notification.');
     }
+  }
+
+  async function sendStrictSessionStartNotificationTest() {
+    if (!userId) {
+      Alert.alert('Notification failed', 'Missing current user.');
+      return;
+    }
+
+    try {
+      await sendSessionStartStrictTestNotification(userId, {
+        onForegroundAlarm: () => setStrictCheckInVisible(true),
+        onTimeout: () => setStrictCheckInVisible(false),
+      });
+    } catch (error) {
+      setStrictCheckInVisible(false);
+      stopSessionStartRepeatingSound('session_start test failed');
+      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not send session start notification.');
+    }
+  }
+
+  function checkInStrictSessionStartTest() {
+    console.log('[notifications] check-in action clicked', { source: 'foreground modal' });
+    stopSessionStartRepeatingSound('check-in action clicked');
+    setStrictCheckInVisible(false);
   }
 
   if (loading) {
@@ -365,6 +411,13 @@ export function ProfileScreen() {
             <Pressable accessibilityRole="button" onPress={sendNotificationTest} style={styles.notificationButton}>
               <Text style={styles.notificationButtonText}>SEND NOTIFICATION</Text>
             </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={sendStrictSessionStartNotificationTest}
+              style={[styles.notificationButton, styles.strictNotificationButton]}
+            >
+              <Text style={styles.strictNotificationButtonText}>TEST SESSION START</Text>
+            </Pressable>
           </View>
 
           <Pressable
@@ -426,6 +479,36 @@ export function ProfileScreen() {
                 {saving ? <ActivityIndicator color={colors.paper} /> : <Text style={styles.modalButtonText}>CONFIRM</Text>}
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        onRequestClose={checkInStrictSessionStartTest}
+        transparent
+        visible={strictCheckInVisible}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, styles.strictModalCard]}>
+            <View style={styles.modalTop}>
+              <View style={[styles.modalCircle, styles.strictModalCircle]} />
+              <View style={[styles.modalLine, styles.strictModalLine]} />
+            </View>
+
+            <Text style={styles.modalKicker}>STRICT ALERT</Text>
+            <Text style={styles.modalTitle}>SESSION START</Text>
+            <Text style={styles.strictModalBody}>
+              Your focus session is starting now. Check in to stop the repeating alert sound.
+            </Text>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={checkInStrictSessionStartTest}
+              style={({ pressed }) => [styles.checkInButton, pressed && styles.modalButtonPressed]}
+            >
+              <Text style={styles.checkInButtonText}>CHECK IN</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -701,6 +784,14 @@ const styles = StyleSheet.create({
     fontFamily: 'Anton_400Regular',
     fontSize: 24,
   },
+  strictNotificationButton: {
+    backgroundColor: colors.text,
+  },
+  strictNotificationButtonText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 24,
+  },
   signOutButton: {
     alignItems: 'center',
     alignSelf: 'center',
@@ -844,5 +935,36 @@ const styles = StyleSheet.create({
     color: colors.paper,
     fontFamily: 'Anton_400Regular',
     fontSize: 22,
+  },
+  strictModalCard: {
+    backgroundColor: colors.bg,
+  },
+  strictModalCircle: {
+    backgroundColor: colors.danger,
+  },
+  strictModalLine: {
+    backgroundColor: colors.primary,
+  },
+  strictModalBody: {
+    color: colors.textMuted,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 10,
+  },
+  checkInButton: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderWidth: 3,
+    justifyContent: 'center',
+    marginTop: 20,
+    minHeight: 58,
+    ...shadowHard,
+  },
+  checkInButtonText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 28,
   },
 });
