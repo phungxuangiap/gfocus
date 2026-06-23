@@ -18,10 +18,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { colors, shadowHard } from '../constants/theme';
+import { cancelSessionCheckInNotification, scheduleSessionCheckInNotification } from '../lib/notifications';
 import { supabase } from '../lib/supabase';
-import { useAppSelector } from '../store/hooks';
+import { setCalendarView, type CalendarView } from '../store/appSlice';
+import { useAppDispatch, useAppSelector } from '../store/hooks';
 
-type CalendarView = 'day' | 'week' | 'month';
 type CreationMode = 'category' | 'task' | 'session';
 type SessionType = 'immutable' | 'mutable';
 type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
@@ -65,8 +66,14 @@ const priorities: TaskPriority[] = ['low', 'medium', 'high', 'critical'];
 const sessionTypes: SessionType[] = ['mutable', 'immutable'];
 const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 const hours = Array.from({ length: 18 }, (_, index) => index + 6);
-const dayBlockHeight = 29;
-const weekBlockHeight = 22;
+const blockDurationMinutes = 5;
+const blocksPerHour = 60 / blockDurationMinutes;
+const blocksPerDay = 24 * blocksPerHour;
+const gridDurationMinutes = 30;
+const gridSegmentsPerHour = 60 / gridDurationMinutes;
+const blocksPerGridSegment = gridDurationMinutes / blockDurationMinutes;
+const dayBlockHeight = 7;
+const weekBlockHeight = 4;
 
 const initialCategory = {
   name: '',
@@ -88,13 +95,14 @@ const initialSession = {
   sessionType: 'mutable' as SessionType,
   date: toDateInput(new Date()),
   startTime: '08:00',
-  blockCount: '2',
+  blockCount: '12',
 };
 
 export function CalendarScreen() {
+  const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const session = useAppSelector((state) => state.auth.session);
-  const [view, setView] = useState<CalendarView>('week');
+  const view = useAppSelector((state) => state.app.calendarView);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creationMode, setCreationMode] = useState<CreationMode | null>(null);
@@ -118,6 +126,7 @@ export function CalendarScreen() {
   const monthDays = useMemo(() => getMonthGrid(today), [today]);
   const userId = session?.user.id;
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const categoryById = useMemo(() => new Map(taskTypes.map((type) => [type.id, type])), [taskTypes]);
   const filteredTasks = useMemo(
     () => tasks.filter((task) => {
       if (categoryFilter && task.task_type_id !== categoryFilter) {
@@ -172,7 +181,6 @@ export function CalendarScreen() {
     }
 
     setLoading(true);
-    await ensureCurrentMonthTimeBlocks(userId, today);
 
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -215,6 +223,37 @@ export function CalendarScreen() {
     loadCalendarData();
   }, [loadCalendarData]);
 
+  async function scheduleSessionCheckIn(
+    sessionId: string,
+    form: typeof initialSession,
+    start: Date,
+    end: Date,
+  ) {
+    if (!userId) {
+      return;
+    }
+
+    const task = taskById.get(form.taskId);
+    const category = task?.task_type_id ? categoryById.get(task.task_type_id) : null;
+
+    try {
+      await scheduleSessionCheckInNotification({
+        categoryName: category?.name ?? null,
+        plannedEndTime: end.toISOString(),
+        plannedStartTime: start.toISOString(),
+        sessionId,
+        taskTitle: task?.title ?? null,
+        title: form.title.trim(),
+        userId,
+      });
+    } catch (error) {
+      Alert.alert(
+        'Notification schedule failed',
+        error instanceof Error ? error.message : 'The session was saved, but its check-in notification was not scheduled.',
+      );
+    }
+  }
+
   async function updateSelectedSession(form: typeof initialSession) {
     if (!supabase || !userId || !selectedSession || !form.taskId || !form.title.trim()) {
       Alert.alert('Check session', 'Task and session title are required.');
@@ -229,19 +268,19 @@ export function CalendarScreen() {
       return false;
     }
 
-    const startIndex = start.getHours() * 2 + (start.getMinutes() >= 30 ? 1 : 0);
+    const startIndex = getBlockIndex(start);
     const endIndex = startIndex + blockCount - 1;
 
-    if (start.getMinutes() % 30 !== 0 || endIndex > 47) {
-      Alert.alert('Check session', 'Sessions must start on a 30-minute block and stay inside the selected day.');
+    if (start.getMinutes() % blockDurationMinutes !== 0 || endIndex > blocksPerDay - 1) {
+      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block and stay inside the selected day.`);
       return false;
     }
 
-    const end = new Date(start.getTime() + blockCount * 30 * 60 * 1000);
+    const end = new Date(start.getTime() + blockCount * blockDurationMinutes * 60 * 1000);
     const blockIndexes = Array.from({ length: blockCount }, (_, index) => startIndex + index);
 
     setSessionSaving(true);
-    await ensureCurrentMonthTimeBlocks(userId, start);
+    await ensureDayTimeBlocks(userId, start);
 
     const { data: blocks, error: blockError } = await supabase
       .from('time_blocks')
@@ -308,6 +347,7 @@ export function CalendarScreen() {
       return false;
     }
 
+    await scheduleSessionCheckIn(selectedSession.id, form, start, end);
     await loadCalendarData();
     setSelectedSession(null);
     return true;
@@ -344,6 +384,7 @@ export function CalendarScreen() {
       return;
     }
 
+    await cancelSessionCheckInNotification(selectedSession.id);
     setSelectedSession(null);
     loadCalendarData();
   }
@@ -413,18 +454,18 @@ export function CalendarScreen() {
       return;
     }
 
-    const startIndex = start.getHours() * 2 + (start.getMinutes() >= 30 ? 1 : 0);
+    const startIndex = getBlockIndex(start);
     const endIndex = startIndex + blockCount - 1;
 
-    if (start.getMinutes() % 30 !== 0 || endIndex > 47) {
-      Alert.alert('Check session', 'Sessions must start on a 30-minute block and stay inside the selected day.');
+    if (start.getMinutes() % blockDurationMinutes !== 0 || endIndex > blocksPerDay - 1) {
+      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block and stay inside the selected day.`);
       return;
     }
 
-    const end = new Date(start.getTime() + blockCount * 30 * 60 * 1000);
+    const end = new Date(start.getTime() + blockCount * blockDurationMinutes * 60 * 1000);
 
     setSaving(true);
-    await ensureCurrentMonthTimeBlocks(userId, start);
+    await ensureDayTimeBlocks(userId, start);
 
     const blockIndexes = Array.from({ length: blockCount }, (_, index) => startIndex + index);
     const { data: blocks, error: blockError } = await supabase
@@ -482,6 +523,7 @@ export function CalendarScreen() {
       return;
     }
 
+    await scheduleSessionCheckIn(newSession.id, sessionForm, start, end);
     setSessionForm(initialSession);
     setCreationMode(null);
     loadCalendarData();
@@ -498,13 +540,13 @@ export function CalendarScreen() {
               <Ionicons color={colors.text} name="list-outline" size={24} />
             </Pressable>
           </View>
-          <Text style={styles.subtitle}>Plan categories, tasks, and sessions on 30-minute blocks.</Text>
+          <Text style={styles.subtitle}>Plan categories, tasks, and sessions on 5-minute blocks.</Text>
         </View>
 
         {loading ? (
           <View style={styles.loadingPanel}>
             <ActivityIndicator color={colors.primary} />
-            <Text style={styles.loadingText}>CREATING MONTH BLOCKS</Text>
+            <Text style={styles.loadingText}>LOADING CALENDAR</Text>
           </View>
         ) : null}
 
@@ -556,7 +598,7 @@ export function CalendarScreen() {
           setTaskMenuVisible((value) => !value);
           setCategoryMenuVisible(false);
         }}
-        onViewChange={setView}
+        onViewChange={(nextView) => dispatch(setCalendarView(nextView))}
         sessionCount={filteredSessions.length}
         taskFilter={taskFilter}
         taskMenuVisible={taskMenuVisible}
@@ -1038,15 +1080,20 @@ function DayView({
     <View style={styles.panel}>
       <View style={styles.panelHeader}>
         <Text style={styles.panelTitle}>{formatLongDate(date)}</Text>
-        <Text style={styles.panelMeta}>48 BLOCKS / 30 MIN</Text>
+        <Text style={styles.panelMeta}>288 BLOCKS / 5 MIN · GRID 30 MIN</Text>
       </View>
       <View style={styles.timeline}>
         {hours.map((hour) => (
           <View key={hour} style={styles.hourRow}>
             <Text style={styles.hourLabel}>{formatHour(hour)}</Text>
             <View style={styles.hourBlocks}>
-              <View pointerEvents="none" style={styles.halfBlock} />
-              <View style={styles.halfBlockMuted} />
+              {Array.from({ length: gridSegmentsPerHour }, (_, index) => (
+                <View
+                  key={`${hour}-${index}`}
+                  pointerEvents="none"
+                  style={[styles.timeBlockSegment, index === gridSegmentsPerHour - 1 && styles.timeBlockSegmentLast]}
+                />
+              ))}
               {isSameDay(date, now) && now.getHours() === hour ? (
                 <CurrentTimeLine blockHeight={dayBlockHeight} now={now} showDot />
               ) : null}
@@ -1106,7 +1153,13 @@ function WeekView({
 
               return (
                 <View key={`${day.toISOString()}-${hour}`} style={styles.weekCell}>
-                  <View style={styles.weekHalfLine} />
+                  {Array.from({ length: gridSegmentsPerHour }, (_, index) => (
+                    <View
+                      key={`${day.toISOString()}-${hour}-${index}`}
+                      pointerEvents="none"
+                      style={[styles.weekBlockSegment, index === gridSegmentsPerHour - 1 && styles.weekBlockSegmentLast]}
+                    />
+                  ))}
                   {isSameDay(day, now) && now.getHours() === hour ? (
                     <CurrentTimeLine blockHeight={weekBlockHeight} now={now} />
                   ) : null}
@@ -1237,30 +1290,25 @@ function SessionDot({
   );
 }
 
-async function ensureCurrentMonthTimeBlocks(userId: string, date: Date) {
+async function ensureDayTimeBlocks(userId: string, date: Date) {
   if (!supabase) {
     return;
   }
 
-  const monthStart = new Date(date.getFullYear(), date.getMonth(), 1);
-  const monthEnd = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const blockDate = toDateInput(date);
   const rows = [];
 
-  for (let day = new Date(monthStart); day <= monthEnd; day.setDate(day.getDate() + 1)) {
-    const blockDate = toDateInput(day);
+  for (let blockIndex = 0; blockIndex < blocksPerDay; blockIndex += 1) {
+    const start = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, blockIndex * blockDurationMinutes);
+    const end = new Date(start.getTime() + blockDurationMinutes * 60 * 1000);
 
-    for (let blockIndex = 0; blockIndex < 48; blockIndex += 1) {
-      const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 0, blockIndex * 30);
-      const end = new Date(start.getTime() + 30 * 60 * 1000);
-
-      rows.push({
-        user_id: userId,
-        block_date: blockDate,
-        block_index: blockIndex,
-        start_time: start.toISOString(),
-        end_time: end.toISOString(),
-      });
-    }
+    rows.push({
+      user_id: userId,
+      block_date: blockDate,
+      block_index: blockIndex,
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+    });
   }
 
   const { error } = await supabase
@@ -1269,6 +1317,62 @@ async function ensureCurrentMonthTimeBlocks(userId: string, date: Date) {
 
   if (error) {
     Alert.alert('Time block setup failed', error.message);
+    return;
+  }
+
+  await syncDaySessionBlocks(userId, date);
+}
+
+async function syncDaySessionBlocks(userId: string, date: Date) {
+  if (!supabase) {
+    return;
+  }
+
+  const blockDate = toDateInput(date);
+  const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const nextDayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
+
+  const { error: clearError } = await supabase
+    .from('time_blocks')
+    .update({ session_id: null })
+    .eq('user_id', userId)
+    .eq('block_date', blockDate);
+
+  if (clearError) {
+    Alert.alert('Time block sync failed', clearError.message);
+    return;
+  }
+
+  const { data: daySessions, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, planned_start_time, block_count')
+    .eq('user_id', userId)
+    .gte('planned_start_time', dayStart.toISOString())
+    .lt('planned_start_time', nextDayStart.toISOString());
+
+  if (sessionError) {
+    Alert.alert('Session block sync failed', sessionError.message);
+    return;
+  }
+
+  for (const session of daySessions ?? []) {
+    const start = new Date(session.planned_start_time);
+    const blockCount = Number(session.block_count);
+
+    if (!Number.isInteger(blockCount) || blockCount <= 0) {
+      continue;
+    }
+
+    const startIndex = getBlockIndex(start);
+    const endIndex = Math.min(blocksPerDay - 1, startIndex + blockCount - 1);
+    const blockIndexes = Array.from({ length: endIndex - startIndex + 1 }, (_, index) => startIndex + index);
+
+    await supabase
+      .from('time_blocks')
+      .update({ session_id: session.id })
+      .eq('user_id', userId)
+      .eq('block_date', toDateInput(start))
+      .in('block_index', blockIndexes);
   }
 }
 
@@ -1352,11 +1456,15 @@ function getSessionBlockHeight(session: SessionRow, blockHeight: number) {
 
 function getSessionTopOffset(session: SessionRow, blockHeight: number) {
   const start = new Date(session.planned_start_time);
-  return start.getMinutes() >= 30 ? blockHeight : 0;
+  return (start.getMinutes() / blockDurationMinutes) * blockHeight;
 }
 
 function getCurrentTimeTopOffset(now: Date, blockHeight: number) {
-  return (now.getMinutes() / 30) * blockHeight;
+  return (now.getMinutes() / blockDurationMinutes) * blockHeight;
+}
+
+function getBlockIndex(date: Date) {
+  return date.getHours() * blocksPerHour + Math.floor(date.getMinutes() / blockDurationMinutes);
 }
 
 function getSessionColor(session: SessionRow, fallback: string) {
@@ -1460,7 +1568,7 @@ const styles = StyleSheet.create({
   },
   hourRow: {
     flexDirection: 'row',
-    minHeight: 58,
+    minHeight: blocksPerHour * dayBlockHeight,
   },
   hourLabel: {
     color: colors.textMuted,
@@ -1474,16 +1582,14 @@ const styles = StyleSheet.create({
     flex: 1,
     position: 'relative',
   },
-  halfBlock: {
+  timeBlockSegment: {
+    borderBottomColor: colors.surfaceMuted,
+    borderBottomWidth: 1,
+    height: dayBlockHeight * blocksPerGridSegment,
+  },
+  timeBlockSegmentLast: {
     borderBottomColor: colors.border,
     borderBottomWidth: 2,
-    flex: 1,
-    padding: 4,
-  },
-  halfBlockMuted: {
-    borderBottomColor: colors.surfaceMuted,
-    borderBottomWidth: 2,
-    flex: 1,
   },
   currentTimeLine: {
     backgroundColor: colors.danger,
@@ -1551,7 +1657,7 @@ const styles = StyleSheet.create({
   },
   weekHourRow: {
     flexDirection: 'row',
-    minHeight: 44,
+    minHeight: blocksPerHour * weekBlockHeight,
   },
   weekHourLabel: {
     color: colors.textMuted,
@@ -1569,10 +1675,13 @@ const styles = StyleSheet.create({
     padding: 2,
     position: 'relative',
   },
-  weekHalfLine: {
+  weekBlockSegment: {
     borderBottomColor: colors.surfaceMuted,
     borderBottomWidth: 1,
-    flex: 1,
+    height: weekBlockHeight * blocksPerGridSegment,
+  },
+  weekBlockSegmentLast: {
+    borderBottomColor: colors.border,
   },
   sessionDot: {
     backgroundColor: colors.primary,

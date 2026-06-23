@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, shadowHard } from '../constants/theme';
 import {
-  addSessionStartCheckInActionListener,
+  scheduleSessionStartStrictNotificationAfter10Seconds,
   sendSessionStartStrictTestNotification,
   sendTestNotification,
   stopSessionStartRepeatingSound,
@@ -46,7 +46,7 @@ type SettingsSnapshot = Pick<
 >;
 
 const defaultSettings = {
-  blockDurationMinutes: '30',
+  blockDurationMinutes: '5',
   strictThresholdPercent: '80',
   blankBlockMinPercent: '20',
   enableAutoReorder: true,
@@ -176,16 +176,23 @@ export function ProfileScreen() {
     loadProfile();
   }, [session, userId]);
 
-  useEffect(() => {
-    const subscription = addSessionStartCheckInActionListener(() => {
-      setStrictCheckInVisible(false);
-    });
+  async function scheduleBackgroundNotificationAfter10Seconds() {
+    if (!userId) {
+      Alert.alert('Notification failed', 'Missing current user.');
+      return;
+    }
 
-    return () => {
-      subscription.remove();
-      stopSessionStartRepeatingSound('profile screen unmounted');
-    };
-  }, []);
+    console.log('[notifications] Background notification after 10s button clicked');
+
+    try {
+      await scheduleSessionStartStrictNotificationAfter10Seconds(userId);
+      Alert.alert('Scheduled', 'Press Home now. The strict session_start notification will trigger after 10 seconds.');
+    } catch (error) {
+      setStrictCheckInVisible(false);
+      stopSessionStartRepeatingSound('schedule after 10 seconds failed');
+      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not schedule background notification.');
+    }
+  }
 
   function updateForm<Key extends keyof ProfileForm>(key: Key, value: ProfileForm[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -417,6 +424,13 @@ export function ProfileScreen() {
               style={[styles.notificationButton, styles.strictNotificationButton]}
             >
               <Text style={styles.strictNotificationButtonText}>TEST SESSION START</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={scheduleBackgroundNotificationAfter10Seconds}
+              style={[styles.notificationButton, styles.scheduledNotificationButton]}
+            >
+              <Text style={styles.scheduledNotificationButtonText}>Background notification after 10s</Text>
             </Pressable>
           </View>
 
@@ -791,6 +805,14 @@ const styles = StyleSheet.create({
     color: colors.paper,
     fontFamily: 'Anton_400Regular',
     fontSize: 24,
+  },
+  scheduledNotificationButton: {
+    backgroundColor: colors.primary,
+  },
+  scheduledNotificationButtonText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 20,
   },
   signOutButton: {
     alignItems: 'center',

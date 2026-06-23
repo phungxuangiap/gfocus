@@ -77,7 +77,7 @@ create table if not exists public.users (
 create table if not exists public.user_settings (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null unique references public.users(id) on delete cascade,
-  block_duration_minutes int not null default 30,
+  block_duration_minutes int not null default 5,
   strict_threshold_percent int default 80,
   blank_block_min_percent int default 20,
   enable_auto_reorder boolean default true,
