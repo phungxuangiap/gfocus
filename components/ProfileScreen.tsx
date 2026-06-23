@@ -14,12 +14,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, shadowHard } from '../constants/theme';
-import {
-  scheduleSessionStartStrictNotificationAfter10Seconds,
-  sendSessionStartStrictTestNotification,
-  sendTestNotification,
-  stopSessionStartRepeatingSound,
-} from '../lib/notifications';
 import { supabase } from '../lib/supabase';
 import { toggleAppMode } from '../store/appSlice';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
@@ -67,7 +61,6 @@ export function ProfileScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [confirmSettingsVisible, setConfirmSettingsVisible] = useState(false);
-  const [strictCheckInVisible, setStrictCheckInVisible] = useState(false);
   const [savedSettings, setSavedSettings] = useState<SettingsSnapshot>(defaultSettings);
 
   const userId = session?.user.id;
@@ -176,24 +169,6 @@ export function ProfileScreen() {
     loadProfile();
   }, [session, userId]);
 
-  async function scheduleBackgroundNotificationAfter10Seconds() {
-    if (!userId) {
-      Alert.alert('Notification failed', 'Missing current user.');
-      return;
-    }
-
-    console.log('[notifications] Background notification after 10s button clicked');
-
-    try {
-      await scheduleSessionStartStrictNotificationAfter10Seconds(userId);
-      Alert.alert('Scheduled', 'Press Home now. The strict session_start notification will trigger after 10 seconds.');
-    } catch (error) {
-      setStrictCheckInVisible(false);
-      stopSessionStartRepeatingSound('schedule after 10 seconds failed');
-      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not schedule background notification.');
-    }
-  }
-
   function updateForm<Key extends keyof ProfileForm>(key: Key, value: ProfileForm[Key]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
@@ -271,44 +246,6 @@ export function ProfileScreen() {
       enableMascot: form.enableMascot,
     });
     Alert.alert('Settings saved', 'Your user settings are up to date.');
-  }
-
-  async function sendNotificationTest() {
-    if (!userId) {
-      Alert.alert('Notification failed', 'Missing current user.');
-      return;
-    }
-
-    try {
-      await sendTestNotification(userId);
-      Alert.alert('Notification scheduled', 'A test notification should appear in about 1 second and was stored in the database.');
-    } catch (error) {
-      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not send test notification.');
-    }
-  }
-
-  async function sendStrictSessionStartNotificationTest() {
-    if (!userId) {
-      Alert.alert('Notification failed', 'Missing current user.');
-      return;
-    }
-
-    try {
-      await sendSessionStartStrictTestNotification(userId, {
-        onForegroundAlarm: () => setStrictCheckInVisible(true),
-        onTimeout: () => setStrictCheckInVisible(false),
-      });
-    } catch (error) {
-      setStrictCheckInVisible(false);
-      stopSessionStartRepeatingSound('session_start test failed');
-      Alert.alert('Notification failed', error instanceof Error ? error.message : 'Could not send session start notification.');
-    }
-  }
-
-  function checkInStrictSessionStartTest() {
-    console.log('[notifications] check-in action clicked', { source: 'foreground modal' });
-    stopSessionStartRepeatingSound('check-in action clicked');
-    setStrictCheckInVisible(false);
   }
 
   if (loading) {
@@ -412,6 +349,7 @@ export function ProfileScreen() {
             </Pressable>
           </View>
 
+          {/*
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>NOTIFICATION TEST</Text>
             <Text style={styles.helperText}>Send a local notification to verify notification permission and scheduling.</Text>
@@ -433,6 +371,7 @@ export function ProfileScreen() {
               <Text style={styles.scheduledNotificationButtonText}>Background notification after 10s</Text>
             </Pressable>
           </View>
+          */}
 
           <Pressable
             accessibilityRole="button"
@@ -497,6 +436,7 @@ export function ProfileScreen() {
         </View>
       </Modal>
 
+      {/*
       <Modal
         animationType="fade"
         onRequestClose={checkInStrictSessionStartTest}
@@ -526,6 +466,7 @@ export function ProfileScreen() {
           </View>
         </View>
       </Modal>
+      */}
     </ScrollView>
   );
 }
