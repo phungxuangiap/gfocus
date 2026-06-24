@@ -4,9 +4,22 @@ export type AppMode = 'plan' | 'focus';
 export type BottomTab = 'calendar' | 'task' | 'profile';
 export type CalendarView = 'day' | 'week' | 'month';
 
+export type FocusSessionEvent = {
+  categoryName?: string | null;
+  notificationId: string;
+  notificationRecordId?: string;
+  plannedEndTime?: string;
+  plannedStartTime?: string;
+  sessionId?: string;
+  taskTitle?: string | null;
+  title?: string;
+  userId?: string;
+};
+
 type AppState = {
   activeTab: BottomTab;
   calendarView: CalendarView;
+  focusSession: FocusSessionEvent | null;
   mode: AppMode;
   strictModeEnabled: boolean;
 };
@@ -14,6 +27,7 @@ type AppState = {
 const initialState: AppState = {
   activeTab: 'profile',
   calendarView: 'week',
+  focusSession: null,
   mode: 'plan',
   strictModeEnabled: false,
 };
@@ -28,6 +42,9 @@ export const appSlice = createSlice({
     setCalendarView(state, action: PayloadAction<CalendarView>) {
       state.calendarView = action.payload;
     },
+    setFocusSession(state, action: PayloadAction<FocusSessionEvent | null>) {
+      state.focusSession = action.payload;
+    },
     setAppMode(state, action: PayloadAction<AppMode>) {
       state.mode = action.payload;
     },
@@ -40,5 +57,5 @@ export const appSlice = createSlice({
   },
 });
 
-export const { setActiveTab, setAppMode, setCalendarView, setStrictModeEnabled, toggleAppMode } = appSlice.actions;
+export const { setActiveTab, setAppMode, setCalendarView, setFocusSession, setStrictModeEnabled, toggleAppMode } = appSlice.actions;
 export const appReducer = appSlice.reducer;

@@ -384,7 +384,7 @@ function CreateTaskModal({
   }
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CREATE" title="TASK" onClose={onClose} />
@@ -446,7 +446,7 @@ function CreateCategoryModal({
   }
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CREATE" title="CATEGORY" onClose={onClose} />
@@ -524,7 +524,7 @@ function TaskDetailModal({
   const category = categories.find((item) => item.id === currentTask.task_type_id);
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="TASK DETAIL" title={currentTask.title} onClose={onClose} />
@@ -611,7 +611,7 @@ function CategoryDetailModal({
   }
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CATEGORY DETAIL" title={currentCategory.name} onClose={onClose} />
@@ -875,9 +875,11 @@ const styles = StyleSheet.create({
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     padding: 18,
+    zIndex: 999,
   },
   modalCard: {
     backgroundColor: colors.paper,

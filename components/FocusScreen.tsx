@@ -74,7 +74,7 @@ export function FocusScreen({ event, finishing, onFinish }: FocusScreenProps) {
         <Text style={styles.clockLabel}>REMAINING UNTIL PLANNED END</Text>
       </View>
 
-      <Modal animationType="fade" onRequestClose={() => undefined} transparent visible={finishModalVisible}>
+      <Modal animationType="fade" navigationBarTranslucent onRequestClose={() => undefined} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={finishModalVisible}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalKicker}>SESSION COMPLETE</Text>
@@ -203,9 +203,11 @@ const styles = StyleSheet.create({
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     padding: 18,
+    zIndex: 999,
   },
   modalCard: {
     backgroundColor: colors.paper,

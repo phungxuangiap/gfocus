@@ -266,7 +266,10 @@ export function AuthScreen() {
 
       <Modal
         animationType="fade"
+        navigationBarTranslucent
         onRequestClose={() => dispatch(hideSignupSuccess())}
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
         transparent
         visible={signupSuccessVisible}
       >
@@ -474,9 +477,11 @@ const styles = StyleSheet.create({
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.42)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     padding: 22,
+    zIndex: 999,
   },
   modalCard: {
     backgroundColor: colors.paper,

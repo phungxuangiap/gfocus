@@ -26,10 +26,20 @@ import {
   calendarHours,
   gridSegmentsPerHour,
 } from '../constants/timeBlocks';
-import { cancelSessionCheckInNotification, scheduleSessionCheckInNotification } from '../lib/notifications';
+import {
+  reorderTodaySessions,
+  type DynamicSessionOrderResult,
+  type NextDayMoveDecision,
+  type NextDayMoveRequest,
+} from '../lib/dynamicSessionOrder';
+import {
+  cancelSessionCheckInNotification,
+  markSessionStartNotificationReadBySessionId,
+  scheduleSessionCheckInNotification,
+} from '../lib/notifications';
 import { refreshStrictModeForDate } from '../lib/strictMode';
 import { supabase } from '../lib/supabase';
-import { setCalendarView, setStrictModeEnabled, type CalendarView } from '../store/appSlice';
+import { setCalendarView, setFocusSession, setStrictModeEnabled, type CalendarView } from '../store/appSlice';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 
 type CreationMode = 'category' | 'task' | 'session';
@@ -59,10 +69,12 @@ type SessionRow = {
   session_type: SessionType;
   planned_start_time: string;
   planned_end_time: string;
+  actual_end_time: string | null;
   block_count: number;
   checked_in: boolean | null;
   tasks: {
     title: string;
+    priority: TaskPriority | null;
     task_types: {
       name: string;
       color: string | null;
@@ -105,6 +117,7 @@ export function CalendarScreen() {
   const insets = useSafeAreaInsets();
   const session = useAppSelector((state) => state.auth.session);
   const view = useAppSelector((state) => state.app.calendarView);
+  const focusSession = useAppSelector((state) => state.app.focusSession);
   const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -122,6 +135,11 @@ export function CalendarScreen() {
   const [taskMenuVisible, setTaskMenuVisible] = useState(false);
   const [selectedSession, setSelectedSession] = useState<SessionRow | null>(null);
   const [sessionSaving, setSessionSaving] = useState(false);
+  const [immutableCheckInSession, setImmutableCheckInSession] = useState<SessionRow | null>(null);
+  const [immutableCheckingIn, setImmutableCheckingIn] = useState(false);
+  const [nextDayMoveRequest, setNextDayMoveRequest] = useState<NextDayMoveRequest | null>(null);
+  const [selectedNextDayStart, setSelectedNextDayStart] = useState('');
+  const nextDayMoveResolver = useRef<((decision: NextDayMoveDecision) => void) | null>(null);
   const sidebarTranslate = useRef(new Animated.Value(360)).current;
   const [now, setNow] = useState(new Date());
   const today = useMemo(() => new Date(), []);
@@ -161,6 +179,38 @@ export function CalendarScreen() {
     [categoryFilter, sessions, taskById, taskFilter],
   );
 
+  const confirmNextDayMove = useCallback((request: NextDayMoveRequest) => {
+    return new Promise<NextDayMoveDecision>((resolve) => {
+      nextDayMoveResolver.current = resolve;
+      setSelectedNextDayStart(request.options[0]?.start ?? '');
+      setNextDayMoveRequest(request);
+    });
+  }, []);
+
+  const syncReorderNotifications = useCallback(async (reorderResult: DynamicSessionOrderResult) => {
+    if (!userId) {
+      return;
+    }
+
+    await Promise.all([
+      ...reorderResult.completedSessionIds.map((sessionId) => cancelSessionCheckInNotification(sessionId)),
+      ...reorderResult.movedSessionSchedules.map((item) => scheduleSessionCheckInNotification({
+        categoryName: item.categoryName,
+        plannedEndTime: item.plannedEndTime,
+        plannedStartTime: item.plannedStartTime,
+        sessionId: item.sessionId,
+        taskTitle: item.taskTitle,
+        title: item.title,
+        userId,
+      }).catch((error) => {
+        console.log('[dynamic-order] reschedule notification failed', {
+          message: error instanceof Error ? error.message : String(error),
+          sessionId: item.sessionId,
+        });
+      })),
+    ]);
+  }, [userId]);
+
   useEffect(() => {
     Animated.timing(sidebarTranslate, {
       duration: 260,
@@ -177,13 +227,18 @@ export function CalendarScreen() {
     return () => clearInterval(timer);
   }, []);
 
-  const loadCalendarData = useCallback(async () => {
+  const loadCalendarData = useCallback(async ({ runDynamicOrder = true }: { runDynamicOrder?: boolean } = {}) => {
     if (!supabase || !userId) {
       setLoading(false);
       return;
     }
 
     setLoading(true);
+
+    if (runDynamicOrder) {
+      const reorderResult = await reorderTodaySessions(userId, today, { confirmNextDayMove });
+      await syncReorderNotifications(reorderResult);
+    }
 
     const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
     const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
@@ -203,7 +258,7 @@ export function CalendarScreen() {
           .order('created_at', { ascending: false }),
         supabase
           .from('sessions')
-          .select('id, task_id, title, description, session_type, planned_start_time, planned_end_time, block_count, checked_in, tasks(title, task_types(name, color))')
+          .select('id, task_id, title, description, session_type, planned_start_time, planned_end_time, actual_end_time, block_count, checked_in, tasks(title, priority, task_types(name, color))')
           .eq('user_id', userId)
           .gte('planned_start_time', monthStart.toISOString())
           .lt('planned_start_time', monthEnd.toISOString())
@@ -219,7 +274,15 @@ export function CalendarScreen() {
 
     setTaskTypes(typeRows ?? []);
     setTasks(taskRows ?? []);
-    setSessions((sessionRows ?? []) as unknown as SessionRow[]);
+    const loadedSessions = (sessionRows ?? []) as unknown as SessionRow[];
+    setSessions(loadedSessions);
+
+    if (!focusSession) {
+      const overdueImmutableSession = loadedSessions.find((item) => isImmutableOverdueForCheckIn(item, new Date()));
+      if (overdueImmutableSession) {
+        setImmutableCheckInSession(overdueImmutableSession);
+      }
+    }
 
     refreshStrictModeForDate(userId, today)
       .then((enabled) => dispatch(setStrictModeEnabled(enabled)))
@@ -228,7 +291,53 @@ export function CalendarScreen() {
           message: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [dispatch, today, userId]);
+  }, [confirmNextDayMove, dispatch, focusSession, syncReorderNotifications, today, userId]);
+
+  function resolveNextDayMove(decision: NextDayMoveDecision) {
+    nextDayMoveResolver.current?.(decision);
+    nextDayMoveResolver.current = null;
+    setNextDayMoveRequest(null);
+    setSelectedNextDayStart('');
+  }
+
+  async function checkInImmutableSession() {
+    if (!supabase || !userId || !immutableCheckInSession) {
+      setImmutableCheckInSession(null);
+      return;
+    }
+
+    setImmutableCheckingIn(true);
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('sessions')
+      .update({
+        actual_start_time: now,
+        checked_in: true,
+      })
+      .eq('id', immutableCheckInSession.id)
+      .eq('user_id', userId);
+
+    if (error) {
+      setImmutableCheckingIn(false);
+      Alert.alert('Check-in failed', error.message);
+      return;
+    }
+
+    await cancelSessionCheckInNotification(immutableCheckInSession.id);
+    await markSessionStartNotificationReadBySessionId(userId, immutableCheckInSession.id);
+    dispatch(setFocusSession({
+      categoryName: immutableCheckInSession.tasks?.task_types?.name ?? null,
+      notificationId: `immutable-overdue-${immutableCheckInSession.id}`,
+      plannedEndTime: immutableCheckInSession.planned_end_time,
+      plannedStartTime: immutableCheckInSession.planned_start_time,
+      sessionId: immutableCheckInSession.id,
+      taskTitle: immutableCheckInSession.tasks?.title ?? null,
+      title: immutableCheckInSession.title,
+      userId,
+    }));
+    setImmutableCheckingIn(false);
+    setImmutableCheckInSession(null);
+  }
 
   useEffect(() => {
     loadCalendarData();
@@ -241,6 +350,12 @@ export function CalendarScreen() {
     end: Date,
   ) {
     if (!userId) {
+      return;
+    }
+
+    if (form.sessionType === 'immutable' && start.getTime() <= Date.now()) {
+      await cancelSessionCheckInNotification(sessionId);
+      await markSessionStartNotificationReadBySessionId(userId, sessionId);
       return;
     }
 
@@ -268,6 +383,11 @@ export function CalendarScreen() {
   async function updateSelectedSession(form: typeof initialSession) {
     if (!supabase || !userId || !selectedSession || !form.taskId || !form.title.trim()) {
       Alert.alert('Check session', 'Task and session title are required.');
+      return false;
+    }
+
+    if (isSessionCompleted(selectedSession)) {
+      Alert.alert('Session locked', 'Completed sessions are immutable and cannot be updated.');
       return false;
     }
 
@@ -306,11 +426,56 @@ export function CalendarScreen() {
       return false;
     }
 
-    if ((blocks ?? []).length !== blockCount || (blocks ?? []).some((block) => block.session_id && block.session_id !== selectedSession.id)) {
+    if ((blocks ?? []).length !== blockCount) {
       setSessionSaving(false);
-      Alert.alert('Conflict detected', 'One or more selected time blocks are already occupied.');
+      Alert.alert('Conflict detected', 'One or more selected time blocks are not available.');
       return false;
     }
+
+    const occupiedSessionIds = Array.from(new Set((blocks ?? [])
+      .map((block) => block.session_id)
+      .filter((sessionId): sessionId is string => Boolean(sessionId) && sessionId !== selectedSession.id)));
+
+    if (occupiedSessionIds.length > 0) {
+      const { data: occupiedSessions, error: occupiedError } = await supabase
+        .from('sessions')
+        .select('id, session_type, checked_in, actual_end_time')
+        .eq('user_id', userId)
+        .in('id', occupiedSessionIds);
+
+      if (occupiedError) {
+        setSessionSaving(false);
+        Alert.alert('Conflict check failed', occupiedError.message);
+        return false;
+      }
+
+      const hasLockedConflict = (occupiedSessions ?? []).some((item) => {
+        return Boolean(item.actual_end_time) || item.checked_in === true || item.session_type === 'immutable';
+      });
+
+      if (hasLockedConflict) {
+        setSessionSaving(false);
+        Alert.alert('Conflict detected', 'The selected time range overlaps an immutable session.');
+        return false;
+      }
+    }
+
+    setSessionSaving(false);
+    const reorderResult = await reorderTodaySessions(userId, start, {
+      abortOnCanceledNextDayMove: true,
+      confirmNextDayMove,
+      excludedSessionIds: [selectedSession.id],
+      reservedIntervals: [{ start, end }],
+    });
+
+    if (reorderResult.canceledNextDayMoveCount > 0) {
+      Alert.alert('Session not updated', 'Confirm the next-day move schedule before updating this session.');
+      return false;
+    }
+
+    await syncReorderNotifications(reorderResult);
+    setSessionSaving(true);
+    await ensureDayTimeBlocks(userId, start);
 
     const { error: clearError } = await supabase
       .from('time_blocks')
@@ -366,6 +531,11 @@ export function CalendarScreen() {
 
   async function deleteSelectedSession() {
     if (!supabase || !userId || !selectedSession) {
+      return;
+    }
+
+    if (isSessionCompleted(selectedSession)) {
+      Alert.alert('Session locked', 'Completed sessions are immutable and cannot be deleted.');
       return;
     }
 
@@ -475,6 +645,11 @@ export function CalendarScreen() {
 
     const end = new Date(start.getTime() + blockCount * blockDurationMinutes * 60 * 1000);
 
+    if (start.getTime() < Date.now()) {
+      Alert.alert('Check session', 'New sessions must start in the future.');
+      return;
+    }
+
     setSaving(true);
     await ensureDayTimeBlocks(userId, start);
 
@@ -492,11 +667,55 @@ export function CalendarScreen() {
       return;
     }
 
-    if ((blocks ?? []).length !== blockCount || (blocks ?? []).some((block) => block.session_id)) {
+    if ((blocks ?? []).length !== blockCount) {
       setSaving(false);
-      Alert.alert('Conflict detected', 'One or more selected time blocks are already occupied.');
+      Alert.alert('Conflict detected', 'One or more selected time blocks are not available.');
       return;
     }
+
+    const occupiedSessionIds = Array.from(new Set((blocks ?? [])
+      .map((block) => block.session_id)
+      .filter((sessionId): sessionId is string => Boolean(sessionId))));
+
+    if (occupiedSessionIds.length > 0) {
+      const { data: occupiedSessions, error: occupiedError } = await supabase
+        .from('sessions')
+        .select('id, session_type, checked_in, actual_end_time')
+        .eq('user_id', userId)
+        .in('id', occupiedSessionIds);
+
+      if (occupiedError) {
+        setSaving(false);
+        Alert.alert('Conflict check failed', occupiedError.message);
+        return;
+      }
+
+      const hasLockedConflict = (occupiedSessions ?? []).some((item) => {
+        return Boolean(item.actual_end_time) || item.checked_in === true || item.session_type === 'immutable';
+      });
+
+      if (hasLockedConflict) {
+        setSaving(false);
+        Alert.alert('Conflict detected', 'The selected time range overlaps an immutable session.');
+        return;
+      }
+    }
+
+    setSaving(false);
+    const reorderResult = await reorderTodaySessions(userId, start, {
+      abortOnCanceledNextDayMove: true,
+      confirmNextDayMove,
+      reservedIntervals: [{ start, end }],
+    });
+
+    if (reorderResult.canceledNextDayMoveCount > 0) {
+      Alert.alert('Session not created', 'Confirm the next-day move schedule before creating this session.');
+      return;
+    }
+
+    await syncReorderNotifications(reorderResult);
+    setSaving(true);
+    await ensureDayTimeBlocks(userId, start);
 
     const { data: newSession, error: sessionError } = await supabase
       .from('sessions')
@@ -537,7 +756,7 @@ export function CalendarScreen() {
     await scheduleSessionCheckIn(newSession.id, sessionForm, start, end);
     setSessionForm(initialSession);
     setCreationMode(null);
-    loadCalendarData();
+    loadCalendarData({ runDynamicOrder: false });
   }
 
   return (
@@ -628,7 +847,129 @@ export function CalendarScreen() {
         session={selectedSession}
         tasks={tasks}
       />
+      <ImmutableCheckInModal
+        checkingIn={immutableCheckingIn}
+        onCheckIn={checkInImmutableSession}
+        session={immutableCheckInSession}
+      />
+      <NextDayMoveModal
+        onCancel={() => resolveNextDayMove({ confirmed: false })}
+        onConfirm={() => resolveNextDayMove({ confirmed: true, plannedStartTime: selectedNextDayStart })}
+        onSelect={setSelectedNextDayStart}
+        request={nextDayMoveRequest}
+        selectedStart={selectedNextDayStart}
+      />
     </View>
+  );
+}
+
+function ImmutableCheckInModal({
+  checkingIn,
+  onCheckIn,
+  session,
+}: {
+  checkingIn: boolean;
+  onCheckIn: () => void;
+  session: SessionRow | null;
+}) {
+  if (!session) {
+    return null;
+  }
+
+  return (
+    <Modal animationType="fade" navigationBarTranslucent onRequestClose={() => undefined} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.nextDayMoveCard}>
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalKicker}>IMMUTABLE CHECK-IN</Text>
+              <Text style={styles.modalTitle}>START NOW?</Text>
+            </View>
+          </View>
+          <View style={styles.nextDayMoveBody}>
+            <Text style={styles.nextDayMoveTitle}>{session.title}</Text>
+            <Text style={styles.nextDayMoveMeta}>
+              {session.tasks?.title ?? 'NO TASK'} · {formatTimeRange(session)}
+            </Text>
+            <Text style={styles.nextDayMoveText}>
+              This immutable session has passed its planned start time. Check in to start focus mode now.
+            </Text>
+          </View>
+          <View style={styles.modalActions}>
+            <Pressable accessibilityRole="button" disabled={checkingIn} onPress={onCheckIn} style={styles.modalButton}>
+              {checkingIn ? <ActivityIndicator color={colors.paper} /> : <Text style={styles.modalButtonText}>CHECK IN</Text>}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function NextDayMoveModal({
+  onCancel,
+  onConfirm,
+  onSelect,
+  request,
+  selectedStart,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+  onSelect: (value: string) => void;
+  request: NextDayMoveRequest | null;
+  selectedStart: string;
+}) {
+  if (!request) {
+    return null;
+  }
+
+  return (
+    <Modal animationType="fade" navigationBarTranslucent onRequestClose={onCancel} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.nextDayMoveCard}>
+          <View style={styles.modalHeader}>
+            <View>
+              <Text style={styles.modalKicker}>DYNAMIC ORDER</Text>
+              <Text style={styles.modalTitle}>MOVE TO NEXT DAY?</Text>
+            </View>
+            <Pressable accessibilityRole="button" onPress={onCancel} style={styles.closeButton}>
+              <Ionicons color={colors.text} name="close" size={24} />
+            </Pressable>
+          </View>
+          <View style={styles.nextDayMoveBody}>
+            <Text style={styles.nextDayMoveTitle}>{request.title}</Text>
+            <Text style={styles.nextDayMoveMeta}>
+              {request.taskTitle ?? 'NO TASK'} · {request.priority.toUpperCase()} · {request.blockCount} BLOCKS
+            </Text>
+            <Text style={styles.nextDayMoveText}>
+              Today has no valid room left. Choose an available block time on {request.targetDate}.
+            </Text>
+            <ScrollView contentContainerStyle={styles.nextDayMoveOptions} showsVerticalScrollIndicator={false} style={styles.nextDayMoveOptionsScroll}>
+              {request.options.map((option) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={option.start}
+                  onPress={() => onSelect(option.start)}
+                  style={[styles.nextDayMoveOption, selectedStart === option.start && styles.nextDayMoveOptionActive]}
+                >
+                  <Text style={[styles.nextDayMoveOptionText, selectedStart === option.start && styles.nextDayMoveOptionTextActive]}>
+                    {option.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+          <View style={styles.modalActions}>
+            <Pressable accessibilityRole="button" onPress={onCancel} style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>CANCEL</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" disabled={!selectedStart} onPress={onConfirm} style={[styles.modalButton, !selectedStart && styles.disabledButton]}>
+              <Text style={styles.modalButtonText}>CONFIRM</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -667,7 +1008,7 @@ function CreateModal({
   const submit = creationMode === 'category' ? onCreateCategory : creationMode === 'task' ? onCreateTask : onCreateSession;
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible={creationMode !== null}>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={creationMode !== null}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.modalBackdrop}
@@ -848,7 +1189,7 @@ function TaskSidebar({
   const selectedTask = totalTasks.find((task) => task.id === taskFilter);
 
   return (
-    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+    <Modal animationType="fade" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={visible}>
       <View style={styles.sidebarLayer}>
         <Pressable accessibilityRole="button" onPress={onClose} style={styles.sidebarShade} />
         <Animated.View style={[styles.sidebarPanel, { transform: [{ translateX }] }]}>
@@ -967,6 +1308,8 @@ function SessionDetailModal({
     return null;
   }
 
+  const completed = isSessionCompleted(session);
+
   function confirmDelete() {
     Alert.alert(
       'Delete session',
@@ -986,7 +1329,7 @@ function SessionDetailModal({
   }
 
   return (
-    <Modal animationType="slide" onRequestClose={onClose} transparent visible>
+    <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.modalBackdrop}>
         <View style={styles.sessionDetailCard}>
           <View style={styles.modalHeader}>
@@ -1029,6 +1372,7 @@ function SessionDetailModal({
                 <InfoLine label="TYPE" value={session.tasks?.task_types?.name ?? 'NO TASK TYPE'} />
                 <InfoLine label="SESSION MODE" value={session.session_type.toUpperCase()} />
                 <InfoLine label="CHECK IN" value={session.checked_in ? 'DONE' : 'PENDING'} />
+                {completed ? <InfoLine label="STATUS" value="COMPLETED / LOCKED" /> : null}
                 {session.description ? (
                   <View style={styles.infoBlock}>
                     <Text style={styles.infoLabel}>DESCRIPTION</Text>
@@ -1049,14 +1393,20 @@ function SessionDetailModal({
                 </Pressable>
               </>
             ) : (
-              <>
-                <Pressable accessibilityRole="button" disabled={saving} onPress={confirmDelete} style={styles.dangerButton}>
-                  <Text style={styles.dangerButtonText}>DELETE</Text>
-                </Pressable>
-                <Pressable accessibilityRole="button" disabled={saving} onPress={() => setEditing(true)} style={styles.modalButton}>
-                  <Text style={styles.modalButtonText}>EDIT</Text>
-                </Pressable>
-              </>
+              completed ? (
+                <View style={styles.lockedNotice}>
+                  <Text style={styles.lockedNoticeText}>THIS SESSION IS LOCKED</Text>
+                </View>
+              ) : (
+                <>
+                  <Pressable accessibilityRole="button" disabled={saving} onPress={confirmDelete} style={styles.dangerButton}>
+                    <Text style={styles.dangerButtonText}>DELETE</Text>
+                  </Pressable>
+                  <Pressable accessibilityRole="button" disabled={saving} onPress={() => setEditing(true)} style={styles.modalButton}>
+                    <Text style={styles.modalButtonText}>EDIT</Text>
+                  </Pressable>
+                </>
+              )
             )}
           </View>
         </View>
@@ -1479,7 +1829,22 @@ function getBlockIndex(date: Date) {
 }
 
 function getSessionColor(session: SessionRow, fallback: string) {
+  if (isSessionCompleted(session)) {
+    return colors.textSoft;
+  }
+
   return session.tasks?.task_types?.color || fallback;
+}
+
+function isSessionCompleted(session: SessionRow) {
+  return Boolean(session.actual_end_time);
+}
+
+function isImmutableOverdueForCheckIn(session: SessionRow, now: Date) {
+  return session.session_type === 'immutable' &&
+    !session.checked_in &&
+    !session.actual_end_time &&
+    new Date(session.planned_start_time).getTime() < now.getTime();
 }
 
 function isSameDay(left: Date, right: Date) {
@@ -1788,10 +2153,12 @@ const styles = StyleSheet.create({
   modalBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 18,
     paddingVertical: 28,
+    zIndex: 999,
   },
   modalCard: {
     backgroundColor: colors.paper,
@@ -1812,10 +2179,71 @@ const styles = StyleSheet.create({
     width: '100%',
     ...shadowHard,
   },
+  nextDayMoveCard: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderWidth: 3,
+    maxHeight: '86%',
+    maxWidth: 460,
+    overflow: 'hidden',
+    width: '100%',
+    ...shadowHard,
+  },
+  nextDayMoveBody: {
+    gap: 10,
+    padding: 18,
+  },
+  nextDayMoveTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 32,
+    lineHeight: 38,
+  },
+  nextDayMoveMeta: {
+    color: colors.primary,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 11,
+    letterSpacing: 1,
+  },
+  nextDayMoveText: {
+    color: colors.textMuted,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  nextDayMoveOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingBottom: 4,
+  },
+  nextDayMoveOptionsScroll: {
+    maxHeight: 240,
+  },
+  nextDayMoveOption: {
+    borderColor: colors.border,
+    borderWidth: 2,
+    minHeight: 38,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  nextDayMoveOptionActive: {
+    backgroundColor: colors.primary,
+  },
+  nextDayMoveOptionText: {
+    color: colors.text,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 11,
+  },
+  nextDayMoveOptionTextActive: {
+    color: colors.paper,
+  },
   sidebarLayer: {
+    elevation: 999,
     flex: 1,
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    zIndex: 999,
   },
   sidebarShade: {
     backgroundColor: 'rgba(22, 23, 18, 0.32)',
@@ -2070,6 +2498,21 @@ const styles = StyleSheet.create({
     fontFamily: 'Anton_400Regular',
     fontSize: 22,
   },
+  lockedNotice: {
+    alignItems: 'center',
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderWidth: 3,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  lockedNoticeText: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
   modalHeader: {
     alignItems: 'flex-start',
     borderBottomColor: colors.border,
@@ -2191,6 +2634,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 52,
     ...shadowHard,
+  },
+  disabledButton: {
+    opacity: 0.48,
   },
   modalButtonText: {
     color: colors.paper,

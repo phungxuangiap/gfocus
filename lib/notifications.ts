@@ -221,6 +221,14 @@ export async function markSessionStartNotificationRead(event: SessionStartNotifi
   });
 }
 
+export async function markSessionStartNotificationReadBySessionId(userId: string, sessionId: string) {
+  await markSessionStartNotificationRead({
+    notificationId: `session-${sessionId}`,
+    sessionId,
+    userId,
+  });
+}
+
 export async function startSessionStartAlertSound(onTimeout?: () => void) {
   stopSessionStartRepeatingSound('restart before new session_start test');
 

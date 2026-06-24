@@ -20,14 +20,16 @@ import {
   addSessionStartCheckInActionListener,
   addSessionStartForegroundListener,
   getLastSessionStartCheckInActionEvent,
+  cancelSessionCheckInNotification,
   markSessionStartNotificationRead,
+  markSessionStartNotificationReadBySessionId,
   stopSessionStartRepeatingSound,
   type SessionStartNotificationEvent,
 } from './lib/notifications';
 import { supabase } from './lib/supabase';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { setBooting, setSession } from './store/authSlice';
-import { setActiveTab } from './store/appSlice';
+import { setActiveTab, setFocusSession } from './store/appSlice';
 import { store } from './store';
 
 export default function App() {
@@ -100,11 +102,11 @@ function MainShell() {
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const activeTab = useAppSelector((state) => state.app.activeTab);
+  const focusEvent = useAppSelector((state) => state.app.focusSession);
   const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const session = useAppSelector((state) => state.auth.session);
   const [checkInEvent, setCheckInEvent] = useState<SessionStartNotificationEvent | null>(null);
   const [checkingIn, setCheckingIn] = useState(false);
-  const [focusEvent, setFocusEvent] = useState<SessionStartNotificationEvent | null>(null);
   const [finishingFocus, setFinishingFocus] = useState(false);
   const [strictNoticeVisible, setStrictNoticeVisible] = useState(false);
   const userId = session?.user.id;
@@ -140,12 +142,12 @@ function MainShell() {
 
     setCheckingIn(false);
     setCheckInEvent(null);
-    setFocusEvent(event);
+    dispatch(setFocusSession(event));
   }
 
   async function finishFocusSession() {
     if (!supabase || !userId || !focusEvent?.sessionId) {
-      setFocusEvent(null);
+      dispatch(setFocusSession(null));
       return;
     }
 
@@ -167,8 +169,10 @@ function MainShell() {
       return;
     }
 
+    await cancelSessionCheckInNotification(focusEvent.sessionId);
+    await markSessionStartNotificationReadBySessionId(userId, focusEvent.sessionId);
     setFinishingFocus(false);
-    setFocusEvent(null);
+    dispatch(setFocusSession(null));
   }
 
   useEffect(() => {
@@ -231,7 +235,7 @@ function MainShell() {
         const task = firstOrValue(data.tasks);
         const taskType = firstOrValue(task?.task_types);
 
-        setFocusEvent({
+        dispatch(setFocusSession({
           categoryName: taskType?.name ?? null,
           notificationId: `remote-focus-${data.id}`,
           plannedEndTime: data.planned_end_time,
@@ -240,7 +244,7 @@ function MainShell() {
           taskTitle: task?.title ?? null,
           title: data.title,
           userId,
-        });
+        }));
       }
     }
 
@@ -253,7 +257,7 @@ function MainShell() {
     return () => {
       canceled = true;
     };
-  }, [focusEvent, userId]);
+  }, [dispatch, focusEvent, userId]);
 
   useEffect(() => {
     setStrictNoticeVisible(strictModeEnabled);
@@ -330,7 +334,7 @@ function StrictModeNoticeModal({
   visible: boolean;
 }) {
   return (
-    <Modal animationType="fade" onRequestClose={onConfirm} transparent visible={visible}>
+    <Modal animationType="fade" navigationBarTranslucent onRequestClose={onConfirm} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={visible}>
       <View style={styles.strictModalBackdrop}>
         <View style={styles.strictModalCard}>
           <View style={styles.strictModalMark} />
@@ -362,7 +366,7 @@ function SessionCheckInModal({
   }
 
   return (
-    <Modal animationType="fade" onRequestClose={() => undefined} transparent visible>
+    <Modal animationType="fade" navigationBarTranslucent onRequestClose={() => undefined} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={styles.checkInBackdrop}>
         <View style={styles.checkInCard}>
           <View style={styles.checkInTop}>
@@ -423,10 +427,12 @@ const styles = StyleSheet.create({
   strictModalBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 18,
     paddingVertical: 28,
+    zIndex: 999,
   },
   strictModalCard: {
     backgroundColor: colors.paper,
@@ -532,10 +538,12 @@ const styles = StyleSheet.create({
   checkInBackdrop: {
     alignItems: 'center',
     backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    elevation: 999,
     flex: 1,
     justifyContent: 'center',
     paddingHorizontal: 18,
     paddingVertical: 28,
+    zIndex: 999,
   },
   checkInCard: {
     backgroundColor: colors.paper,

@@ -62,7 +62,6 @@ export async function refreshStrictModeForDate(userId: string, date = new Date()
       immutable_blocks: immutableBlocks,
       mutable_blocks: mutableBlocks,
       planned_blocks: plannedBlocks,
-      skipped_blocks: 0,
       stat_date: toDateInput(dayStart),
       strict_mode_enable: strictModeEnabled,
       total_blocks: totalRemainingBlocks,
