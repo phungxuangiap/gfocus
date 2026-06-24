@@ -221,7 +221,7 @@ export async function markSessionStartNotificationRead(event: SessionStartNotifi
   });
 }
 
-async function startSessionStartRepeatingSound(onTimeout?: () => void) {
+export async function startSessionStartAlertSound(onTimeout?: () => void) {
   stopSessionStartRepeatingSound('restart before new session_start test');
 
   await setAudioModeAsync({
@@ -319,7 +319,7 @@ export function addSessionStartForegroundListener(options: {
     }
 
     options.onForegroundAlarm(event);
-    startSessionStartRepeatingSound(() => options.onTimeout?.(event)).catch((error) => {
+    startSessionStartAlertSound(() => options.onTimeout?.(event)).catch((error) => {
       logNotification('custom sound start failed', {
         message: error instanceof Error ? error.message : String(error),
       });
@@ -568,7 +568,7 @@ export async function sendSessionStartStrictTestNotification(
 
   if (isForeground) {
     options.onForegroundAlarm?.();
-    await startSessionStartRepeatingSound(options.onTimeout);
+    await startSessionStartAlertSound(options.onTimeout);
     return;
   }
 

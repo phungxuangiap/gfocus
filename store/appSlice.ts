@@ -8,12 +8,14 @@ type AppState = {
   activeTab: BottomTab;
   calendarView: CalendarView;
   mode: AppMode;
+  strictModeEnabled: boolean;
 };
 
 const initialState: AppState = {
   activeTab: 'profile',
   calendarView: 'week',
   mode: 'plan',
+  strictModeEnabled: false,
 };
 
 export const appSlice = createSlice({
@@ -29,11 +31,14 @@ export const appSlice = createSlice({
     setAppMode(state, action: PayloadAction<AppMode>) {
       state.mode = action.payload;
     },
+    setStrictModeEnabled(state, action: PayloadAction<boolean>) {
+      state.strictModeEnabled = action.payload;
+    },
     toggleAppMode(state) {
       state.mode = state.mode === 'plan' ? 'focus' : 'plan';
     },
   },
 });
 
-export const { setActiveTab, setAppMode, setCalendarView, toggleAppMode } = appSlice.actions;
+export const { setActiveTab, setAppMode, setCalendarView, setStrictModeEnabled, toggleAppMode } = appSlice.actions;
 export const appReducer = appSlice.reducer;

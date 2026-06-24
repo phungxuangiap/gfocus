@@ -12,6 +12,7 @@ import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 
 import { AuthScreen } from './components/AuthScreen';
 import { CalendarScreen } from './components/CalendarScreen';
+import { FocusScreen } from './components/FocusScreen';
 import { ProfileScreen } from './components/ProfileScreen';
 import { TaskScreen } from './components/TaskScreen';
 import { colors, shadowHard } from './constants/theme';
@@ -23,10 +24,11 @@ import {
   stopSessionStartRepeatingSound,
   type SessionStartNotificationEvent,
 } from './lib/notifications';
+import { refreshStrictModeForDate } from './lib/strictMode';
 import { supabase } from './lib/supabase';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { setBooting, setSession } from './store/authSlice';
-import { setActiveTab } from './store/appSlice';
+import { setActiveTab, setStrictModeEnabled } from './store/appSlice';
 import { store } from './store';
 
 export default function App() {
@@ -99,9 +101,12 @@ function MainShell() {
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const activeTab = useAppSelector((state) => state.app.activeTab);
+  const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const session = useAppSelector((state) => state.auth.session);
   const [checkInEvent, setCheckInEvent] = useState<SessionStartNotificationEvent | null>(null);
   const [checkingIn, setCheckingIn] = useState(false);
+  const [focusEvent, setFocusEvent] = useState<SessionStartNotificationEvent | null>(null);
+  const [finishingFocus, setFinishingFocus] = useState(false);
   const userId = session?.user.id;
 
   async function checkInSession(event: SessionStartNotificationEvent | null) {
@@ -129,10 +134,41 @@ function MainShell() {
 
     if (error) {
       console.log('[notifications] session check-in update failed', { message: error.message, sessionId: event.sessionId });
+      setCheckingIn(false);
+      return;
     }
 
     setCheckingIn(false);
     setCheckInEvent(null);
+    setFocusEvent(event);
+  }
+
+  async function finishFocusSession() {
+    if (!supabase || !userId || !focusEvent?.sessionId) {
+      setFocusEvent(null);
+      return;
+    }
+
+    setFinishingFocus(true);
+    const { error } = await supabase
+      .from('sessions')
+      .update({
+        actual_end_time: new Date().toISOString(),
+      })
+      .eq('id', focusEvent.sessionId)
+      .eq('user_id', userId);
+
+    if (error) {
+      console.log('[focus] session finish update failed', {
+        message: error.message,
+        sessionId: focusEvent.sessionId,
+      });
+      setFinishingFocus(false);
+      return;
+    }
+
+    setFinishingFocus(false);
+    setFocusEvent(null);
   }
 
   useEffect(() => {
@@ -168,19 +204,99 @@ function MainShell() {
     };
   }, [userId]);
 
+  useEffect(() => {
+    let canceled = false;
+
+    async function restoreFocusSession() {
+      if (!supabase || !userId || focusEvent) {
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('id, title, planned_start_time, planned_end_time, checked_in, actual_end_time, tasks(title, task_types(name))')
+        .eq('user_id', userId)
+        .eq('checked_in', true)
+        .is('actual_end_time', null)
+        .order('actual_start_time', { ascending: false, nullsFirst: false })
+        .order('planned_start_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error || !data) {
+        return;
+      }
+
+      if (!canceled) {
+        const task = firstOrValue(data.tasks);
+        const taskType = firstOrValue(task?.task_types);
+
+        setFocusEvent({
+          categoryName: taskType?.name ?? null,
+          notificationId: `remote-focus-${data.id}`,
+          plannedEndTime: data.planned_end_time,
+          plannedStartTime: data.planned_start_time,
+          sessionId: data.id,
+          taskTitle: task?.title ?? null,
+          title: data.title,
+          userId,
+        });
+      }
+    }
+
+    restoreFocusSession().catch((error) => {
+      console.log('[focus] restore failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    return () => {
+      canceled = true;
+    };
+  }, [focusEvent, userId]);
+
+  useEffect(() => {
+    if (!userId) {
+      dispatch(setStrictModeEnabled(false));
+      return;
+    }
+
+    refreshStrictModeForDate(userId)
+      .then((enabled) => dispatch(setStrictModeEnabled(enabled)))
+      .catch((error) => {
+        console.log('[strict-mode] refresh failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [dispatch, userId]);
+
+  if (focusEvent) {
+    return (
+      <>
+        <FocusScreen event={focusEvent} finishing={finishingFocus} onFinish={finishFocusSession} />
+        <StatusBar backgroundColor="transparent" hidden translucent />
+      </>
+    );
+  }
+
   return (
-    <SafeAreaView style={[styles.appScreen, { paddingTop: insets.top }]}>
+    <SafeAreaView style={[styles.appScreen, strictModeEnabled && styles.appScreenStrict, { paddingTop: insets.top }]}>
+      {strictModeEnabled ? (
+        <View style={styles.strictBanner}>
+          <Text style={styles.strictBannerText}>STRICT MODE</Text>
+        </View>
+      ) : null}
       <View style={styles.scene}>
         {activeTab === 'calendar' ? <CalendarScreen /> : null}
         {activeTab === 'task' ? <TaskScreen /> : null}
         {activeTab === 'profile' ? <ProfileScreen /> : null}
       </View>
-      <View style={[styles.bottomNav, { paddingBottom: Math.max(insets.bottom, 10) }]}>
+      <View style={[styles.bottomNav, strictModeEnabled && styles.bottomNavStrict, { paddingBottom: Math.max(insets.bottom, 10) }]}>
         <Pressable
           accessibilityRole="tab"
           accessibilityState={{ selected: activeTab === 'calendar' }}
           onPress={() => dispatch(setActiveTab('calendar'))}
-          style={[styles.navItem, activeTab === 'calendar' && styles.navItemActive]}
+          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'calendar' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
         >
           <Ionicons color={activeTab === 'calendar' ? colors.paper : colors.text} name="calendar-outline" size={24} />
           <Text style={[styles.navLabel, activeTab === 'calendar' && styles.navLabelActive]}>Calendar</Text>
@@ -189,7 +305,7 @@ function MainShell() {
           accessibilityRole="tab"
           accessibilityState={{ selected: activeTab === 'profile' }}
           onPress={() => dispatch(setActiveTab('profile'))}
-          style={[styles.navItem, activeTab === 'profile' && styles.navItemActive]}
+          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'profile' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
         >
           <Ionicons color={activeTab === 'profile' ? colors.paper : colors.text} name="person-circle-outline" size={24} />
           <Text style={[styles.navLabel, activeTab === 'profile' && styles.navLabelActive]}>Profile</Text>
@@ -198,7 +314,7 @@ function MainShell() {
           accessibilityRole="tab"
           accessibilityState={{ selected: activeTab === 'task' }}
           onPress={() => dispatch(setActiveTab('task'))}
-          style={[styles.navItem, activeTab === 'task' && styles.navItemActive]}
+          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'task' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
         >
           <Ionicons color={activeTab === 'task' ? colors.paper : colors.text} name="list-circle-outline" size={24} />
           <Text style={[styles.navLabel, activeTab === 'task' && styles.navLabelActive]}>Task</Text>
@@ -212,6 +328,10 @@ function MainShell() {
       <StatusBar backgroundColor="transparent" style="dark" translucent />
     </SafeAreaView>
   );
+}
+
+function firstOrValue<Value>(value: Value | Value[] | null | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function SessionCheckInModal({
@@ -277,8 +397,24 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
     flex: 1,
   },
+  appScreenStrict: {
+    backgroundColor: '#f4dfda',
+  },
   scene: {
     flex: 1,
+  },
+  strictBanner: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderBottomColor: colors.border,
+    borderBottomWidth: 3,
+    paddingVertical: 7,
+  },
+  strictBannerText: {
+    color: colors.paper,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 12,
+    letterSpacing: 1,
   },
   bottomNav: {
     alignItems: 'center',
@@ -297,6 +433,9 @@ const styles = StyleSheet.create({
     right: 0,
     ...shadowHard,
   },
+  bottomNavStrict: {
+    backgroundColor: '#f4dfda',
+  },
   navItem: {
     alignItems: 'center',
     borderColor: colors.border,
@@ -308,8 +447,14 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: 14,
   },
+  navItemStrict: {
+    backgroundColor: colors.paper,
+  },
   navItemActive: {
     backgroundColor: colors.primary,
+  },
+  navItemActiveStrict: {
+    backgroundColor: colors.danger,
   },
   navLabel: {
     color: colors.text,

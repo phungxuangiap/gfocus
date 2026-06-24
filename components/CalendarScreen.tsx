@@ -19,8 +19,9 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { colors, shadowHard } from '../constants/theme';
 import { cancelSessionCheckInNotification, scheduleSessionCheckInNotification } from '../lib/notifications';
+import { refreshStrictModeForDate } from '../lib/strictMode';
 import { supabase } from '../lib/supabase';
-import { setCalendarView, type CalendarView } from '../store/appSlice';
+import { setCalendarView, setStrictModeEnabled, type CalendarView } from '../store/appSlice';
 import { useAppDispatch, useAppSelector } from '../store/hooks';
 
 type CreationMode = 'category' | 'task' | 'session';
@@ -65,7 +66,7 @@ const viewOptions: CalendarView[] = ['day', 'week', 'month'];
 const priorities: TaskPriority[] = ['low', 'medium', 'high', 'critical'];
 const sessionTypes: SessionType[] = ['mutable', 'immutable'];
 const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-const hours = Array.from({ length: 18 }, (_, index) => index + 6);
+const hours = Array.from({ length: 24 }, (_, index) => index);
 const blockDurationMinutes = 5;
 const blocksPerHour = 60 / blockDurationMinutes;
 const blocksPerDay = 24 * blocksPerHour;
@@ -217,7 +218,14 @@ export function CalendarScreen() {
     setTaskTypes(typeRows ?? []);
     setTasks(taskRows ?? []);
     setSessions((sessionRows ?? []) as unknown as SessionRow[]);
-  }, [today, userId]);
+    refreshStrictModeForDate(userId, today)
+      .then((enabled) => dispatch(setStrictModeEnabled(enabled)))
+      .catch((error) => {
+        console.log('[strict-mode] calendar refresh failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }, [dispatch, today, userId]);
 
   useEffect(() => {
     loadCalendarData();

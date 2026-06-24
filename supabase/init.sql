@@ -206,6 +206,7 @@ create table if not exists public.daily_statistics (
   immutable_blocks int default 0,
   mutable_blocks int default 0,
   skipped_blocks int default 0,
+  strict_mode_enable boolean default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   unique (user_id, stat_date)
