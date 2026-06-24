@@ -10,6 +10,8 @@ export const colors = {
   textSoft: '#a8a99f',
   border: '#161712',
   danger: '#b91a1a',
+  strictBg: '#e3c4c0',
+  strictPaper: '#e7c6bf',
 } as const;
 
 export const shadowHard = {

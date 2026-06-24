@@ -18,6 +18,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
 import { colors, shadowHard } from '../constants/theme';
+import {
+  blockDurationMinutes,
+  blocksPerDay,
+  blocksPerGridSegment,
+  blocksPerHour,
+  calendarHours,
+  gridSegmentsPerHour,
+} from '../constants/timeBlocks';
 import { cancelSessionCheckInNotification, scheduleSessionCheckInNotification } from '../lib/notifications';
 import { refreshStrictModeForDate } from '../lib/strictMode';
 import { supabase } from '../lib/supabase';
@@ -66,13 +74,6 @@ const viewOptions: CalendarView[] = ['day', 'week', 'month'];
 const priorities: TaskPriority[] = ['low', 'medium', 'high', 'critical'];
 const sessionTypes: SessionType[] = ['mutable', 'immutable'];
 const dayNames = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-const hours = Array.from({ length: 24 }, (_, index) => index);
-const blockDurationMinutes = 5;
-const blocksPerHour = 60 / blockDurationMinutes;
-const blocksPerDay = 24 * blocksPerHour;
-const gridDurationMinutes = 30;
-const gridSegmentsPerHour = 60 / gridDurationMinutes;
-const blocksPerGridSegment = gridDurationMinutes / blockDurationMinutes;
 const dayBlockHeight = 7;
 const weekBlockHeight = 4;
 
@@ -104,6 +105,7 @@ export function CalendarScreen() {
   const insets = useSafeAreaInsets();
   const session = useAppSelector((state) => state.auth.session);
   const view = useAppSelector((state) => state.app.calendarView);
+  const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [creationMode, setCreationMode] = useState<CreationMode | null>(null);
@@ -218,6 +220,7 @@ export function CalendarScreen() {
     setTaskTypes(typeRows ?? []);
     setTasks(taskRows ?? []);
     setSessions((sessionRows ?? []) as unknown as SessionRow[]);
+
     refreshStrictModeForDate(userId, today)
       .then((enabled) => dispatch(setStrictModeEnabled(enabled)))
       .catch((error) => {
@@ -539,7 +542,7 @@ export function CalendarScreen() {
 
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 148 + insets.bottom }]} style={styles.screen}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 148 + insets.bottom }]} style={[styles.screen, strictModeEnabled && styles.screenStrict]}>
         <View style={styles.header}>
           <Text style={styles.kicker}>BLOCK CALENDAR</Text>
           <View style={styles.titleRow}>
@@ -1091,7 +1094,7 @@ function DayView({
         <Text style={styles.panelMeta}>288 BLOCKS / 5 MIN · GRID 30 MIN</Text>
       </View>
       <View style={styles.timeline}>
-        {hours.map((hour) => (
+        {calendarHours.map((hour) => (
           <View key={hour} style={styles.hourRow}>
             <Text style={styles.hourLabel}>{formatHour(hour)}</Text>
             <View style={styles.hourBlocks}>
@@ -1150,7 +1153,7 @@ function WeekView({
         ))}
       </View>
       <View style={styles.weekGrid}>
-        {hours.map((hour) => (
+        {calendarHours.map((hour) => (
           <View key={hour} style={styles.weekHourRow}>
             <Text style={styles.weekHourLabel}>{formatHour(hour)}</Text>
             {days.map((day) => {
@@ -1492,6 +1495,9 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: colors.bg,
     flex: 1,
+  },
+  screenStrict: {
+    backgroundColor: colors.strictBg,
   },
   content: {
     padding: 20,

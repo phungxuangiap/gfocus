@@ -51,6 +51,7 @@ export function ProfileScreen() {
   const dispatch = useAppDispatch();
   const insets = useSafeAreaInsets();
   const appMode = useAppSelector((state) => state.app.mode);
+  const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const session = useAppSelector((state) => state.auth.session);
   const [form, setForm] = useState<ProfileForm>({
     email: session?.user.email ?? '',
@@ -259,7 +260,7 @@ export function ProfileScreen() {
   return (
     <ScrollView
       contentContainerStyle={[styles.content, { paddingBottom: 112 + insets.bottom }]}
-      style={styles.screen}
+      style={[styles.screen, strictModeEnabled && styles.screenStrict]}
     >
       <View style={styles.header}>
         <Text style={styles.kicker}>USER MODULE</Text>
@@ -558,6 +559,9 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: colors.bg,
     flex: 1,
+  },
+  screenStrict: {
+    backgroundColor: colors.strictBg,
   },
   content: {
     padding: 20,

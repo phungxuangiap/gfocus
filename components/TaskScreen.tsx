@@ -53,6 +53,7 @@ const emptyCategoryForm = {
 export function TaskScreen() {
   const insets = useSafeAreaInsets();
   const session = useAppSelector((state) => state.auth.session);
+  const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const [activeTab, setActiveTab] = useState<TaskSubTab>('tasks');
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
@@ -254,7 +255,7 @@ export function TaskScreen() {
 
   return (
     <View style={styles.root}>
-      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 132 + insets.bottom }]} style={styles.screen}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingBottom: 132 + insets.bottom }]} style={[styles.screen, strictModeEnabled && styles.screenStrict]}>
         <Text style={styles.kicker}>WORK ITEMS</Text>
         <Text style={styles.title}>TASK</Text>
         <Text style={styles.subtitle}>Manage task list and categories.</Text>
@@ -740,6 +741,9 @@ const styles = StyleSheet.create({
   screen: {
     backgroundColor: colors.bg,
     flex: 1,
+  },
+  screenStrict: {
+    backgroundColor: colors.strictBg,
   },
   content: {
     padding: 20,

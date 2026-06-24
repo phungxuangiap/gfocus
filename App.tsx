@@ -24,11 +24,10 @@ import {
   stopSessionStartRepeatingSound,
   type SessionStartNotificationEvent,
 } from './lib/notifications';
-import { refreshStrictModeForDate } from './lib/strictMode';
 import { supabase } from './lib/supabase';
 import { useAppDispatch, useAppSelector } from './store/hooks';
 import { setBooting, setSession } from './store/authSlice';
-import { setActiveTab, setStrictModeEnabled } from './store/appSlice';
+import { setActiveTab } from './store/appSlice';
 import { store } from './store';
 
 export default function App() {
@@ -107,6 +106,7 @@ function MainShell() {
   const [checkingIn, setCheckingIn] = useState(false);
   const [focusEvent, setFocusEvent] = useState<SessionStartNotificationEvent | null>(null);
   const [finishingFocus, setFinishingFocus] = useState(false);
+  const [strictNoticeVisible, setStrictNoticeVisible] = useState(false);
   const userId = session?.user.id;
 
   async function checkInSession(event: SessionStartNotificationEvent | null) {
@@ -256,19 +256,8 @@ function MainShell() {
   }, [focusEvent, userId]);
 
   useEffect(() => {
-    if (!userId) {
-      dispatch(setStrictModeEnabled(false));
-      return;
-    }
-
-    refreshStrictModeForDate(userId)
-      .then((enabled) => dispatch(setStrictModeEnabled(enabled)))
-      .catch((error) => {
-        console.log('[strict-mode] refresh failed', {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
-  }, [dispatch, userId]);
+    setStrictNoticeVisible(strictModeEnabled);
+  }, [strictModeEnabled]);
 
   if (focusEvent) {
     return (
@@ -281,12 +270,7 @@ function MainShell() {
 
   return (
     <SafeAreaView style={[styles.appScreen, strictModeEnabled && styles.appScreenStrict, { paddingTop: insets.top }]}>
-      {strictModeEnabled ? (
-        <View style={styles.strictBanner}>
-          <Text style={styles.strictBannerText}>STRICT MODE</Text>
-        </View>
-      ) : null}
-      <View style={styles.scene}>
+      <View style={[styles.scene, strictModeEnabled && styles.sceneStrict]}>
         {activeTab === 'calendar' ? <CalendarScreen /> : null}
         {activeTab === 'task' ? <TaskScreen /> : null}
         {activeTab === 'profile' ? <ProfileScreen /> : null}
@@ -325,6 +309,10 @@ function MainShell() {
         event={checkInEvent}
         onCheckIn={() => checkInSession(checkInEvent)}
       />
+      <StrictModeNoticeModal
+        onConfirm={() => setStrictNoticeVisible(false)}
+        visible={strictNoticeVisible}
+      />
       <StatusBar backgroundColor="transparent" style="dark" translucent />
     </SafeAreaView>
   );
@@ -332,6 +320,32 @@ function MainShell() {
 
 function firstOrValue<Value>(value: Value | Value[] | null | undefined) {
   return Array.isArray(value) ? value[0] : value;
+}
+
+function StrictModeNoticeModal({
+  onConfirm,
+  visible,
+}: {
+  onConfirm: () => void;
+  visible: boolean;
+}) {
+  return (
+    <Modal animationType="fade" onRequestClose={onConfirm} transparent visible={visible}>
+      <View style={styles.strictModalBackdrop}>
+        <View style={styles.strictModalCard}>
+          <View style={styles.strictModalMark} />
+          <Text style={styles.strictModalKicker}>STRICT MODE ENABLED</Text>
+          <Text style={styles.strictModalTitle}>STAY HONEST</Text>
+          <Text style={styles.strictModalBody}>
+            Your remaining day is tightly packed. The app will use a warning theme until the pressure eases.
+          </Text>
+          <Pressable accessibilityRole="button" onPress={onConfirm} style={styles.strictModalButton}>
+            <Text style={styles.strictModalButtonText}>CONFIRM</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
 }
 
 function SessionCheckInModal({
@@ -398,23 +412,73 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   appScreenStrict: {
-    backgroundColor: '#f4dfda',
+    backgroundColor: colors.strictBg,
   },
   scene: {
     flex: 1,
   },
-  strictBanner: {
-    alignItems: 'center',
-    backgroundColor: colors.danger,
-    borderBottomColor: colors.border,
-    borderBottomWidth: 3,
-    paddingVertical: 7,
+  sceneStrict: {
+    backgroundColor: colors.strictBg,
   },
-  strictBannerText: {
-    color: colors.paper,
+  strictModalBackdrop: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(22, 23, 18, 0.48)',
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 28,
+  },
+  strictModalCard: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderWidth: 3,
+    maxWidth: 440,
+    padding: 20,
+    width: '100%',
+    ...shadowHard,
+  },
+  strictModalMark: {
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderWidth: 3,
+    height: 18,
+    marginBottom: 14,
+    width: 88,
+  },
+  strictModalKicker: {
+    color: colors.danger,
     fontFamily: 'IBMPlexMono_700Bold',
     fontSize: 12,
     letterSpacing: 1,
+    marginBottom: 8,
+  },
+  strictModalTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 42,
+    lineHeight: 48,
+  },
+  strictModalBody: {
+    color: colors.textMuted,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 8,
+  },
+  strictModalButton: {
+    alignItems: 'center',
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderWidth: 3,
+    justifyContent: 'center',
+    marginTop: 18,
+    minHeight: 56,
+    ...shadowHard,
+  },
+  strictModalButtonText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 24,
   },
   bottomNav: {
     alignItems: 'center',
@@ -434,7 +498,7 @@ const styles = StyleSheet.create({
     ...shadowHard,
   },
   bottomNavStrict: {
-    backgroundColor: '#f4dfda',
+    backgroundColor: colors.strictPaper,
   },
   navItem: {
     alignItems: 'center',
@@ -447,11 +511,11 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: 14,
   },
-  navItemStrict: {
-    backgroundColor: colors.paper,
-  },
   navItemActive: {
     backgroundColor: colors.primary,
+  },
+  navItemStrict: {
+    backgroundColor: colors.paper,
   },
   navItemActiveStrict: {
     backgroundColor: colors.danger,
