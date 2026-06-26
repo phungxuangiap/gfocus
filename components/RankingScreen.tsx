@@ -3,14 +3,35 @@ import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, View } from 're
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
 
+import { blockDurationMinutes } from '../constants/timeBlocks';
 import { colors, shadowHard } from '../constants/theme';
 import { supabase } from '../lib/supabase';
 import { useAppSelector } from '../store/hooks';
 
 type SessionStatRow = {
   actual_end_time: string | null;
+  block_count: number;
   planned_end_time: string;
   planned_start_time: string;
+  tasks: {
+    title: string;
+    task_types: {
+      color: string | null;
+      name: string;
+    } | Array<{
+      color: string | null;
+      name: string;
+    }> | null;
+  } | Array<{
+    title: string;
+    task_types: {
+      color: string | null;
+      name: string;
+    } | Array<{
+      color: string | null;
+      name: string;
+    }> | null;
+  }> | null;
 };
 
 type DailyStatisticRow = {
@@ -56,7 +77,7 @@ export function RankingScreen() {
     ] = await Promise.all([
       supabase
         .from('sessions')
-        .select('planned_start_time, planned_end_time, actual_end_time')
+        .select('planned_start_time, planned_end_time, actual_end_time, block_count, tasks(title, task_types(name, color))')
         .eq('user_id', userId)
         .not('actual_end_time', 'is', null)
         .gte('planned_start_time', weekStart.toISOString())
@@ -104,6 +125,7 @@ export function RankingScreen() {
   const currentStreak = useMemo(() => calculateSkippedBlockStreak(dailyStats, new Date()), [dailyStats]);
   const currentUserRank = leaderboardRows.find((row) => row.user_id === userId)?.rank ?? 0;
   const visibleLeaderboardRows = leaderboardRows.slice(0, 20);
+  const weeklyBreakdown = useMemo(() => buildWeeklyBreakdown(completedSessions), [completedSessions]);
 
   if (loading) {
     return (
@@ -156,6 +178,20 @@ export function RankingScreen() {
         </View>
       </View>
 
+      <View style={styles.breakdownCard}>
+        <View style={styles.breakdownHeader}>
+          <View>
+            <Text style={styles.weekTitle}>WEEKLY BLOCK MIX</Text>
+            <Text style={styles.breakdownMeta}>
+              {weeklyBreakdown.totalBlocks} BLOCKS · {(weeklyBreakdown.totalBlocks * blockDurationMinutes / 60).toFixed(1)} HOURS
+            </Text>
+          </View>
+          <Ionicons color={colors.text} name="analytics-outline" size={24} />
+        </View>
+        <BreakdownSection emptyLabel="NO CATEGORY BLOCKS YET" items={weeklyBreakdown.categories} title="CATEGORIES" />
+        <BreakdownSection emptyLabel="NO TASK BLOCKS YET" items={weeklyBreakdown.tasks} title="TASKS" />
+      </View>
+
       <Text style={styles.sectionTitle}>GLOBAL RANKING</Text>
       <View style={styles.rankingTable}>
         <View style={styles.tableHeader}>
@@ -185,6 +221,34 @@ export function RankingScreen() {
         ) : null}
       </View>
     </ScrollView>
+  );
+}
+
+type BreakdownItem = {
+  blocks: number;
+  color: string;
+  label: string;
+  percent: number;
+};
+
+function BreakdownSection({ emptyLabel, items, title }: { emptyLabel: string; items: BreakdownItem[]; title: string }) {
+  return (
+    <View style={styles.breakdownSection}>
+      <Text style={styles.breakdownTitle}>{title}</Text>
+      {items.length === 0 ? <Text style={styles.breakdownEmpty}>{emptyLabel}</Text> : null}
+      {items.map((item) => (
+        <View key={`${title}-${item.label}`} style={styles.breakdownRow}>
+          <View style={styles.breakdownRowTop}>
+            <Text numberOfLines={1} style={styles.breakdownLabel}>{item.label.toUpperCase()}</Text>
+            <Text style={styles.breakdownPercent}>{Math.round(item.percent)}%</Text>
+          </View>
+          <View style={styles.breakdownTrack}>
+            <View style={[styles.breakdownFill, { backgroundColor: item.color, width: `${Math.max(item.percent, 3)}%` }]} />
+          </View>
+          <Text style={styles.breakdownBlocks}>{item.blocks} BLOCKS</Text>
+        </View>
+      ))}
+    </View>
   );
 }
 
@@ -274,6 +338,56 @@ function calculateSkippedBlockStreak(stats: DailyStatisticRow[], baseDate: Date)
   }
 
   return streak;
+}
+
+function buildWeeklyBreakdown(sessions: SessionStatRow[]) {
+  const totalBlocks = sessions.reduce((total, item) => total + Number(item.block_count ?? 0), 0);
+  const categoryMap = new Map<string, { blocks: number; color: string; label: string }>();
+  const taskMap = new Map<string, { blocks: number; color: string; label: string }>();
+
+  sessions.forEach((item) => {
+    const blocks = Number(item.block_count ?? 0);
+    const task = firstOrValue(item.tasks);
+    const taskType = firstOrValue(task?.task_types);
+    const categoryLabel = taskType?.name ?? 'No category';
+    const taskLabel = task?.title ?? 'Untitled task';
+    const categoryColor = taskType?.color || colors.primary;
+    const taskColor = taskType?.color || colors.surface;
+
+    upsertBreakdown(categoryMap, categoryLabel, blocks, categoryColor);
+    upsertBreakdown(taskMap, taskLabel, blocks, taskColor);
+  });
+
+  return {
+    categories: toBreakdownItems(categoryMap, totalBlocks),
+    tasks: toBreakdownItems(taskMap, totalBlocks).slice(0, 6),
+    totalBlocks,
+  };
+}
+
+function upsertBreakdown(map: Map<string, { blocks: number; color: string; label: string }>, label: string, blocks: number, color: string) {
+  const current = map.get(label);
+
+  if (current) {
+    current.blocks += blocks;
+    return;
+  }
+
+  map.set(label, { blocks, color, label });
+}
+
+function toBreakdownItems(map: Map<string, { blocks: number; color: string; label: string }>, totalBlocks: number): BreakdownItem[] {
+  return [...map.values()]
+    .filter((item) => item.blocks > 0)
+    .sort((left, right) => right.blocks - left.blocks)
+    .map((item) => ({
+      ...item,
+      percent: totalBlocks > 0 ? (item.blocks / totalBlocks) * 100 : 0,
+    }));
+}
+
+function firstOrValue<Value>(value: Value | Value[] | null | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 const styles = StyleSheet.create({
@@ -450,6 +564,86 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 8,
     textAlign: 'center',
+  },
+  breakdownCard: {
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderWidth: 3,
+    marginBottom: 26,
+    padding: 14,
+    ...shadowHard,
+  },
+  breakdownHeader: {
+    alignItems: 'center',
+    borderBottomColor: colors.border,
+    borderBottomWidth: 3,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+    paddingBottom: 12,
+  },
+  breakdownMeta: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginTop: 4,
+  },
+  breakdownSection: {
+    marginTop: 12,
+  },
+  breakdownTitle: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 24,
+    lineHeight: 30,
+    marginBottom: 8,
+  },
+  breakdownEmpty: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 11,
+    letterSpacing: 1,
+    paddingVertical: 8,
+  },
+  breakdownRow: {
+    marginBottom: 12,
+  },
+  breakdownRowTop: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'space-between',
+  },
+  breakdownLabel: {
+    color: colors.text,
+    flex: 1,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 13,
+  },
+  breakdownPercent: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 20,
+    lineHeight: 24,
+  },
+  breakdownTrack: {
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderWidth: 2,
+    height: 18,
+    marginTop: 5,
+    overflow: 'hidden',
+  },
+  breakdownFill: {
+    height: '100%',
+  },
+  breakdownBlocks: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginTop: 4,
   },
   sectionTitle: {
     color: colors.text,
