@@ -86,6 +86,18 @@ type SessionRow = {
   } | null;
 };
 
+type SessionBlockSegment = {
+  blockDate: string;
+  blockIndexes: number[];
+  date: Date;
+};
+
+type SessionDaySegment = {
+  blockCount: number;
+  end: Date;
+  start: Date;
+};
+
 const viewOptions: CalendarView[] = ['day', 'week', 'month'];
 const priorities: TaskPriority[] = ['low', 'medium', 'high', 'critical'];
 const sessionTypes: SessionType[] = ['mutable', 'immutable'];
@@ -309,8 +321,8 @@ export function CalendarScreen() {
           .from('sessions')
           .select('id, task_id, title, description, session_type, planned_start_time, planned_end_time, actual_end_time, block_count, checked_in, tasks(title, priority, task_types(name, color))')
           .eq('user_id', userId)
-          .gte('planned_start_time', visibleRange.start.toISOString())
           .lt('planned_start_time', visibleRange.end.toISOString())
+          .gt('planned_end_time', visibleRange.start.toISOString())
           .order('planned_start_time', { ascending: true }),
       ]);
 
@@ -462,40 +474,38 @@ export function CalendarScreen() {
       return false;
     }
 
-    const startIndex = getBlockIndex(start);
-    const endIndex = startIndex + blockCount - 1;
-
-    if (start.getMinutes() % blockDurationMinutes !== 0 || endIndex > blocksPerDay - 1) {
-      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block and stay inside the selected day.`);
+    if (start.getMinutes() % blockDurationMinutes !== 0) {
+      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block.`);
       return false;
     }
 
     const end = new Date(start.getTime() + blockCount * blockDurationMinutes * 60 * 1000);
-    const blockIndexes = Array.from({ length: blockCount }, (_, index) => startIndex + index);
-
-    setSessionSaving(true);
-    await ensureDayTimeBlocks(userId, start);
-
-    const { data: blocks, error: blockError } = await supabase
-      .from('time_blocks')
-      .select('id, session_id')
-      .eq('user_id', userId)
-      .eq('block_date', form.date)
-      .in('block_index', blockIndexes);
-
-    if (blockError) {
-      setSessionSaving(false);
-      Alert.alert('Session check failed', blockError.message);
+    if (start.getTime() >= end.getTime()) {
+      Alert.alert('Check session', 'Session start time must be before end time.');
       return false;
     }
 
-    if ((blocks ?? []).length !== blockCount) {
+    const blockSegments = getSessionBlockSegments(start, blockCount);
+
+    setSessionSaving(true);
+    await ensureSessionTimeBlocks(userId, blockSegments);
+
+    let blocks: Array<{ id: string; session_id: string | null }>;
+    try {
+      blocks = await loadTimeBlocksForSegments(userId, blockSegments);
+    } catch (blockError) {
+      setSessionSaving(false);
+      Alert.alert('Session check failed', blockError instanceof Error ? blockError.message : 'Could not check time blocks.');
+      return false;
+    }
+
+    if (blocks.length !== getTotalSegmentBlockCount(blockSegments)) {
       setSessionSaving(false);
       Alert.alert('Conflict detected', 'One or more selected time blocks are not available.');
       return false;
     }
 
-    const occupiedSessionIds = Array.from(new Set((blocks ?? [])
+    const occupiedSessionIds = Array.from(new Set(blocks
       .map((block) => block.session_id)
       .filter((sessionId): sessionId is string => Boolean(sessionId) && sessionId !== selectedSession.id)));
 
@@ -538,7 +548,7 @@ export function CalendarScreen() {
 
     await syncReorderNotifications(reorderResult);
     setSessionSaving(true);
-    await ensureDayTimeBlocks(userId, start);
+    await ensureSessionTimeBlocks(userId, blockSegments);
 
     const { error: clearError } = await supabase
       .from('time_blocks')
@@ -572,12 +582,7 @@ export function CalendarScreen() {
       return false;
     }
 
-    const { error: assignError } = await supabase
-      .from('time_blocks')
-      .update({ session_id: selectedSession.id })
-      .eq('user_id', userId)
-      .eq('block_date', form.date)
-      .in('block_index', blockIndexes);
+    const assignError = await assignTimeBlocksForSegments(userId, selectedSession.id, blockSegments);
 
     setSessionSaving(false);
 
@@ -699,45 +704,43 @@ export function CalendarScreen() {
       return;
     }
 
-    const startIndex = getBlockIndex(start);
-    const endIndex = startIndex + blockCount - 1;
-
-    if (start.getMinutes() % blockDurationMinutes !== 0 || endIndex > blocksPerDay - 1) {
-      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block and stay inside the selected day.`);
+    if (start.getMinutes() % blockDurationMinutes !== 0) {
+      Alert.alert('Check session', `Sessions must start on a ${blockDurationMinutes}-minute block.`);
       return;
     }
 
     const end = new Date(start.getTime() + blockCount * blockDurationMinutes * 60 * 1000);
+    if (start.getTime() >= end.getTime()) {
+      Alert.alert('Check session', 'Session start time must be before end time.');
+      return;
+    }
 
     if (start.getTime() < Date.now()) {
       Alert.alert('Check session', 'New sessions must start in the future.');
       return;
     }
 
+    const blockSegments = getSessionBlockSegments(start, blockCount);
+
     setSaving(true);
-    await ensureDayTimeBlocks(userId, start);
+    await ensureSessionTimeBlocks(userId, blockSegments);
 
-    const blockIndexes = Array.from({ length: blockCount }, (_, index) => startIndex + index);
-    const { data: blocks, error: blockError } = await supabase
-      .from('time_blocks')
-      .select('id, session_id')
-      .eq('user_id', userId)
-      .eq('block_date', sessionForm.date)
-      .in('block_index', blockIndexes);
-
-    if (blockError) {
+    let blocks: Array<{ id: string; session_id: string | null }>;
+    try {
+      blocks = await loadTimeBlocksForSegments(userId, blockSegments);
+    } catch (blockError) {
       setSaving(false);
-      Alert.alert('Session check failed', blockError.message);
+      Alert.alert('Session check failed', blockError instanceof Error ? blockError.message : 'Could not check time blocks.');
       return;
     }
 
-    if ((blocks ?? []).length !== blockCount) {
+    if (blocks.length !== getTotalSegmentBlockCount(blockSegments)) {
       setSaving(false);
       Alert.alert('Conflict detected', 'One or more selected time blocks are not available.');
       return;
     }
 
-    const occupiedSessionIds = Array.from(new Set((blocks ?? [])
+    const occupiedSessionIds = Array.from(new Set(blocks
       .map((block) => block.session_id)
       .filter((sessionId): sessionId is string => Boolean(sessionId))));
 
@@ -779,7 +782,7 @@ export function CalendarScreen() {
 
     await syncReorderNotifications(reorderResult);
     setSaving(true);
-    await ensureDayTimeBlocks(userId, start);
+    await ensureSessionTimeBlocks(userId, blockSegments);
 
     const { data: newSession, error: sessionError } = await supabase
       .from('sessions')
@@ -803,12 +806,7 @@ export function CalendarScreen() {
       return;
     }
 
-    const { error: updateError } = await supabase
-      .from('time_blocks')
-      .update({ session_id: newSession.id })
-      .eq('user_id', userId)
-      .eq('block_date', sessionForm.date)
-      .in('block_index', blockIndexes);
+    const updateError = await assignTimeBlocksForSegments(userId, newSession.id, blockSegments);
 
     setSaving(false);
 
@@ -1518,7 +1516,9 @@ function DayView({
   onSelectSession: (session: SessionRow) => void;
   sessions: SessionRow[];
 }) {
-  const daySessions = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), date));
+  const daySessions = sessions
+    .map((item) => ({ segment: getSessionDaySegment(item, date), session: item }))
+    .filter((item): item is { segment: SessionDaySegment; session: SessionRow } => Boolean(item.segment));
 
   return (
     <View style={styles.panel}>
@@ -1541,16 +1541,16 @@ function DayView({
               {isSameDay(date, now) && now.getHours() === hour ? (
                 <CurrentTimeLine blockHeight={dayBlockHeight} now={now} showDot />
               ) : null}
-              {daySessions.filter((item) => new Date(item.planned_start_time).getHours() === hour).map((item) => (
+              {daySessions.filter((item) => item.segment.start.getHours() === hour).map(({ segment, session }) => (
                 <SessionChip
-                  key={item.id}
-                  onPress={() => onSelectSession(item)}
-                  session={item}
+                  key={`${session.id}-${toDateInput(date)}`}
+                  onPress={() => onSelectSession(session)}
+                  session={session}
                   style={[
                     styles.sessionChipFloating,
                     {
-                      height: getSessionBlockHeight(item, dayBlockHeight),
-                      top: getSessionTopOffset(item, dayBlockHeight),
+                      height: getSegmentBlockHeight(segment, dayBlockHeight),
+                      top: getSegmentTopOffset(segment, dayBlockHeight),
                     },
                   ]}
                 />
@@ -1590,9 +1590,9 @@ function WeekView({
           <View key={hour} style={styles.weekHourRow}>
             <Text style={styles.weekHourLabel}>{formatHour(hour)}</Text>
             {days.map((day) => {
-              const cellSessions = sessions.filter((item) => {
-                const start = new Date(item.planned_start_time);
-                return isSameDay(start, day) && start.getHours() === hour;
+              const cellSessions = sessions.flatMap((item) => {
+                const segment = getSessionDaySegment(item, day);
+                return segment && segment.start.getHours() === hour ? [{ segment, session: item }] : [];
               });
 
               return (
@@ -1607,16 +1607,16 @@ function WeekView({
                   {isSameDay(day, now) && now.getHours() === hour ? (
                     <CurrentTimeLine blockHeight={weekBlockHeight} now={now} />
                   ) : null}
-                  {cellSessions.slice(0, 1).map((item) => (
+                  {cellSessions.slice(0, 1).map(({ segment, session }) => (
                     <SessionDot
-                      key={item.id}
-                      onPress={() => onSelectSession(item)}
-                      session={item}
+                      key={`${session.id}-${toDateInput(day)}`}
+                      onPress={() => onSelectSession(session)}
+                      session={session}
                       style={[
                         styles.sessionDotFloating,
                         {
-                          height: getSessionBlockHeight(item, weekBlockHeight),
-                          top: getSessionTopOffset(item, weekBlockHeight),
+                          height: getSegmentBlockHeight(segment, weekBlockHeight),
+                          top: getSegmentTopOffset(segment, weekBlockHeight),
                         },
                       ]}
                     />
@@ -1671,7 +1671,7 @@ function MonthView({
         {days.map((day, index) => {
           const isCurrentMonth = day.getMonth() === baseDate.getMonth();
           const isToday = isSameDay(day, now);
-          const daySessions = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), day));
+          const daySessions = sessions.filter((item) => getSessionDaySegment(item, day));
           const count = daySessions.length;
 
           return (
@@ -1769,6 +1769,57 @@ async function ensureDayTimeBlocks(userId: string, date: Date) {
   await syncDaySessionBlocks(userId, date);
 }
 
+async function ensureSessionTimeBlocks(userId: string, segments: SessionBlockSegment[]) {
+  const uniqueDates = Array.from(new Map(segments.map((segment) => [segment.blockDate, segment.date])).values());
+
+  for (const date of uniqueDates) {
+    await ensureDayTimeBlocks(userId, date);
+  }
+}
+
+async function loadTimeBlocksForSegments(userId: string, segments: SessionBlockSegment[]) {
+  if (!supabase) {
+    return [];
+  }
+
+  const client = supabase;
+  const results = await Promise.all(segments.map((segment) => client
+    .from('time_blocks')
+    .select('id, session_id')
+    .eq('user_id', userId)
+    .eq('block_date', segment.blockDate)
+    .in('block_index', segment.blockIndexes)));
+
+  const error = results.find((result) => result.error)?.error;
+
+  if (error) {
+    throw error;
+  }
+
+  return results.flatMap((result) => result.data ?? []);
+}
+
+async function assignTimeBlocksForSegments(userId: string, sessionId: string, segments: SessionBlockSegment[]) {
+  if (!supabase) {
+    return null;
+  }
+
+  for (const segment of segments) {
+    const { error } = await supabase
+      .from('time_blocks')
+      .update({ session_id: sessionId })
+      .eq('user_id', userId)
+      .eq('block_date', segment.blockDate)
+      .in('block_index', segment.blockIndexes);
+
+    if (error) {
+      return error;
+    }
+  }
+
+  return null;
+}
+
 async function syncDaySessionBlocks(userId: string, date: Date) {
   if (!supabase) {
     return;
@@ -1793,8 +1844,8 @@ async function syncDaySessionBlocks(userId: string, date: Date) {
     .from('sessions')
     .select('id, planned_start_time, block_count')
     .eq('user_id', userId)
-    .gte('planned_start_time', dayStart.toISOString())
-    .lt('planned_start_time', nextDayStart.toISOString());
+    .lt('planned_start_time', nextDayStart.toISOString())
+    .gt('planned_end_time', dayStart.toISOString());
 
   if (sessionError) {
     Alert.alert('Session block sync failed', sessionError.message);
@@ -1809,16 +1860,16 @@ async function syncDaySessionBlocks(userId: string, date: Date) {
       continue;
     }
 
-    const startIndex = getBlockIndex(start);
-    const endIndex = Math.min(blocksPerDay - 1, startIndex + blockCount - 1);
-    const blockIndexes = Array.from({ length: endIndex - startIndex + 1 }, (_, index) => startIndex + index);
+    const segment = getSessionBlockSegments(start, blockCount).find((item) => item.blockDate === blockDate);
 
-    await supabase
-      .from('time_blocks')
-      .update({ session_id: session.id })
-      .eq('user_id', userId)
-      .eq('block_date', toDateInput(start))
-      .in('block_index', blockIndexes);
+    if (segment) {
+      await supabase
+        .from('time_blocks')
+        .update({ session_id: session.id })
+        .eq('user_id', userId)
+        .eq('block_date', segment.blockDate)
+        .in('block_index', segment.blockIndexes);
+    }
   }
 }
 
@@ -1897,6 +1948,34 @@ function parseLocalDateTime(dateValue: string, timeValue: string) {
   return new Date(year, month - 1, day, hour, minute);
 }
 
+function getSessionBlockSegments(start: Date, blockCount: number): SessionBlockSegment[] {
+  const segments: SessionBlockSegment[] = [];
+  let remainingBlocks = blockCount;
+  let cursor = new Date(start);
+
+  while (remainingBlocks > 0) {
+    const day = startOfDay(cursor);
+    const startIndex = isSameDay(cursor, start) ? getBlockIndex(cursor) : 0;
+    const blockCountInDay = Math.min(remainingBlocks, blocksPerDay - startIndex);
+    const blockIndexes = Array.from({ length: blockCountInDay }, (_, index) => startIndex + index);
+
+    segments.push({
+      blockDate: toDateInput(day),
+      blockIndexes,
+      date: day,
+    });
+
+    remainingBlocks -= blockCountInDay;
+    cursor = addDays(day, 1);
+  }
+
+  return segments;
+}
+
+function getTotalSegmentBlockCount(segments: SessionBlockSegment[]) {
+  return segments.reduce((total, segment) => total + segment.blockIndexes.length, 0);
+}
+
 function sessionToForm(session: SessionRow) {
   const start = new Date(session.planned_start_time);
 
@@ -1944,6 +2023,33 @@ function getSessionBlockHeight(session: SessionRow, blockHeight: number) {
 function getSessionTopOffset(session: SessionRow, blockHeight: number) {
   const start = new Date(session.planned_start_time);
   return (start.getMinutes() / blockDurationMinutes) * blockHeight;
+}
+
+function getSessionDaySegment(session: SessionRow, date: Date): SessionDaySegment | null {
+  const dayStart = startOfDay(date);
+  const dayEnd = addDays(dayStart, 1);
+  const sessionStart = new Date(session.planned_start_time);
+  const sessionEnd = new Date(session.planned_end_time);
+  const start = new Date(Math.max(sessionStart.getTime(), dayStart.getTime()));
+  const end = new Date(Math.min(sessionEnd.getTime(), dayEnd.getTime()));
+
+  if (start.getTime() >= end.getTime()) {
+    return null;
+  }
+
+  return {
+    blockCount: Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (blockDurationMinutes * 60 * 1000))),
+    end,
+    start,
+  };
+}
+
+function getSegmentBlockHeight(segment: SessionDaySegment, blockHeight: number) {
+  return Math.max(blockHeight - 4, segment.blockCount * blockHeight - 4);
+}
+
+function getSegmentTopOffset(segment: SessionDaySegment, blockHeight: number) {
+  return (segment.start.getMinutes() / blockDurationMinutes) * blockHeight;
 }
 
 function getCurrentTimeTopOffset(now: Date, blockHeight: number) {

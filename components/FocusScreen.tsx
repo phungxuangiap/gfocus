@@ -1,8 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useKeepAwake } from 'expo-keep-awake';
+import { ActivityIndicator, Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, shadowHard } from '../constants/theme';
 import { startSessionStartAlertSound, stopSessionStartRepeatingSound, type SessionStartNotificationEvent } from '../lib/notifications';
+
+const circleSize = 320;
+const circleDotSize = 22;
+const circleRadius = circleSize / 2 - 14;
 
 type FocusScreenProps = {
   checkoutAlarmEvent?: SessionStartNotificationEvent | null;
@@ -12,12 +17,22 @@ type FocusScreenProps = {
 };
 
 export function FocusScreen({ checkoutAlarmEvent, event, finishing, onFinish }: FocusScreenProps) {
+  useKeepAwake();
+
   const plannedEndTime = useMemo(() => {
     const fallback = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     return event.plannedEndTime ?? fallback;
   }, [event.plannedEndTime]);
+  const plannedStartTime = useMemo(() => {
+    const fallback = new Date(Date.now()).toISOString();
+    return event.plannedStartTime ?? fallback;
+  }, [event.plannedStartTime]);
   const [remainingMs, setRemainingMs] = useState(() => getRemainingMs(plannedEndTime));
   const [finishModalVisible, setFinishModalVisible] = useState(() => getRemainingMs(plannedEndTime) <= 0);
+  const floatAnim = useRef(new Animated.Value(0)).current;
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+  const progress = getCountdownProgress(plannedStartTime, plannedEndTime, remainingMs);
+  const progressDotStyle = getProgressDotStyle(progress);
 
   useEffect(() => {
     lockOrientation('landscape');
@@ -27,6 +42,49 @@ export function FocusScreen({ checkoutAlarmEvent, event, finishing, onFinish }: 
       lockOrientation('portrait');
     };
   }, []);
+
+  useEffect(() => {
+    const floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(floatAnim, {
+          duration: 1900,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(floatAnim, {
+          duration: 1900,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          duration: 2400,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          duration: 2400,
+          easing: Easing.inOut(Easing.quad),
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+
+    floatLoop.start();
+    pulseLoop.start();
+
+    return () => {
+      floatLoop.stop();
+      pulseLoop.stop();
+    };
+  }, [floatAnim, pulseAnim]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -68,19 +126,75 @@ export function FocusScreen({ checkoutAlarmEvent, event, finishing, onFinish }: 
 
   return (
     <View style={styles.screen}>
-      <View style={styles.infoRail}>
+      <View style={styles.topRail}>
         <Text style={styles.kicker}>FOCUS MODE</Text>
-        <Text numberOfLines={1} style={styles.title}>{event.title ?? 'SESSION'}</Text>
-        <View style={styles.metaRow}>
-          <InfoPill label="TASK" value={event.taskTitle ?? 'NO TASK DETAIL'} />
-          <InfoPill label="CATEGORY" value={event.categoryName ?? 'NO CATEGORY'} />
-          <InfoPill label="ENDS" value={formatClock(plannedEndTime)} />
-        </View>
+        <Text style={styles.endsText}>ENDS {formatClock(plannedEndTime)}</Text>
       </View>
 
-      <View style={styles.clockWrap}>
-        <Text style={styles.clock}>{formatCountdown(remainingMs)}</Text>
-        <Text style={styles.clockLabel}>REMAINING UNTIL PLANNED END</Text>
+      <View style={styles.focusStage}>
+        <View style={styles.circleStack}>
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.circlePulse,
+              {
+                opacity: pulseAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.24, 0.42],
+                }),
+                transform: [
+                  {
+                    scale: pulseAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.96, 1.04],
+                    }),
+                  },
+                ],
+              },
+            ]}
+          />
+          <View style={styles.countdownCircle}>
+            <View style={styles.circleTrack} />
+            <View style={[styles.progressDot, progressDotStyle]} />
+            <View style={styles.circleTickTop} />
+            <View style={styles.circleTickRight} />
+            <View style={styles.circleTickBottom} />
+            <View style={styles.circleTickLeft} />
+
+            <Animated.View
+              style={[
+                styles.sessionOverlay,
+                {
+                  opacity: floatAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [0.9, 1],
+                  }),
+                  transform: [
+                    {
+                      translateY: floatAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, -6],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+              <Text numberOfLines={1} style={styles.overlayTitle}>{event.title ?? 'SESSION'}</Text>
+              <Text numberOfLines={1} style={styles.overlayTask}>{event.taskTitle ?? 'NO TASK DETAIL'}</Text>
+            </Animated.View>
+
+            <View style={styles.clockWrap}>
+              <Text style={styles.clock}>{formatCountdown(remainingMs)}</Text>
+              <Text style={styles.clockLabel}>REMAINING</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.metaRow}>
+          <InfoPill label="CATEGORY" value={event.categoryName ?? 'NO CATEGORY'} />
+          <InfoPill label="PROGRESS" value={`${Math.round(progress * 100)}%`} />
+        </View>
       </View>
 
       <Modal animationType="fade" navigationBarTranslucent onRequestClose={() => undefined} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={finishModalVisible}>
@@ -110,6 +224,24 @@ function InfoPill({ label, value }: { label: string; value: string }) {
 
 function getRemainingMs(plannedEndTime: string) {
   return Math.max(0, new Date(plannedEndTime).getTime() - Date.now());
+}
+
+function getCountdownProgress(plannedStartTime: string, plannedEndTime: string, remainingMs: number) {
+  const start = new Date(plannedStartTime).getTime();
+  const end = new Date(plannedEndTime).getTime();
+  const duration = Math.max(1, end - start);
+  const elapsed = Math.max(0, duration - remainingMs);
+  return Math.min(1, Math.max(0, elapsed / duration));
+}
+
+function getProgressDotStyle(progress: number) {
+  const angle = -Math.PI / 2 + progress * Math.PI * 2;
+  const center = circleSize / 2;
+
+  return {
+    left: center + Math.cos(angle) * circleRadius - circleDotSize / 2,
+    top: center + Math.sin(angle) * circleRadius - circleDotSize / 2,
+  };
 }
 
 function formatCountdown(ms: number) {
@@ -143,16 +275,24 @@ async function lockOrientation(mode: 'landscape' | 'portrait') {
 
 const styles = StyleSheet.create({
   screen: {
+    alignItems: 'center',
     backgroundColor: colors.bg,
     flex: 1,
-    justifyContent: 'space-between',
-    padding: 24,
+    justifyContent: 'center',
+    padding: 18,
   },
-  infoRail: {
+  topRail: {
+    alignItems: 'center',
     backgroundColor: colors.paper,
     borderColor: colors.border,
     borderWidth: 3,
-    padding: 14,
+    flexDirection: 'row',
+    gap: 14,
+    left: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    position: 'absolute',
+    top: 18,
     ...shadowHard,
   },
   kicker: {
@@ -161,23 +301,147 @@ const styles = StyleSheet.create({
     fontSize: 12,
     letterSpacing: 1,
   },
-  title: {
+  endsText: {
+    color: colors.text,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 12,
+    letterSpacing: 1,
+  },
+  focusStage: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  circleStack: {
+    height: circleSize,
+    position: 'relative',
+    width: circleSize,
+  },
+  circlePulse: {
+    backgroundColor: colors.surfaceMuted,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 3,
+    height: circleSize + 28,
+    left: -14,
+    position: 'absolute',
+    top: -14,
+    width: circleSize + 28,
+  },
+  countdownCircle: {
+    alignItems: 'center',
+    backgroundColor: colors.paper,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 4,
+    height: circleSize,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    position: 'relative',
+    width: circleSize,
+    ...shadowHard,
+  },
+  circleTrack: {
+    borderColor: colors.primary,
+    borderRadius: 999,
+    borderWidth: 4,
+    bottom: 12,
+    left: 12,
+    opacity: 0.55,
+    position: 'absolute',
+    right: 12,
+    top: 12,
+  },
+  progressDot: {
+    backgroundColor: colors.primary,
+    borderColor: colors.border,
+    borderRadius: 999,
+    borderWidth: 3,
+    height: circleDotSize,
+    position: 'absolute',
+    width: circleDotSize,
+    zIndex: 4,
+  },
+  circleTickTop: {
+    backgroundColor: colors.border,
+    height: 18,
+    position: 'absolute',
+    top: 12,
+    width: 4,
+  },
+  circleTickRight: {
+    backgroundColor: colors.border,
+    height: 4,
+    position: 'absolute',
+    right: 12,
+    width: 18,
+  },
+  circleTickBottom: {
+    backgroundColor: colors.border,
+    bottom: 12,
+    height: 18,
+    position: 'absolute',
+    width: 4,
+  },
+  circleTickLeft: {
+    backgroundColor: colors.border,
+    height: 4,
+    left: 12,
+    position: 'absolute',
+    width: 18,
+  },
+  sessionOverlay: {
+    alignItems: 'center',
+    left: 42,
+    position: 'absolute',
+    right: 42,
+    top: 48,
+    zIndex: 3,
+  },
+  overlayTitle: {
     color: colors.text,
     fontFamily: 'Anton_400Regular',
-    fontSize: 36,
-    lineHeight: 42,
+    fontSize: 27,
+    lineHeight: 33,
+    textAlign: 'center',
+  },
+  overlayTask: {
+    color: colors.primary,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 10,
+    letterSpacing: 1,
+    marginTop: 2,
+    textAlign: 'center',
+  },
+  clockWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 38,
+    zIndex: 2,
+  },
+  clock: {
+    color: colors.text,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 78,
+    lineHeight: 84,
+  },
+  clockLabel: {
+    color: colors.textMuted,
+    fontFamily: 'IBMPlexMono_700Bold',
+    fontSize: 12,
+    letterSpacing: 1,
   },
   metaRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 10,
+    marginTop: 16,
+    width: circleSize,
   },
   infoPill: {
     backgroundColor: colors.surfaceMuted,
     borderColor: colors.border,
     borderWidth: 2,
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     paddingHorizontal: 10,
     paddingVertical: 7,
   },
@@ -192,22 +456,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Inter_700Bold',
     fontSize: 13,
     marginTop: 3,
-  },
-  clockWrap: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  clock: {
-    color: colors.text,
-    fontFamily: 'Anton_400Regular',
-    fontSize: 104,
-    lineHeight: 112,
-  },
-  clockLabel: {
-    color: colors.textMuted,
-    fontFamily: 'IBMPlexMono_700Bold',
-    fontSize: 12,
-    letterSpacing: 1,
   },
   modalBackdrop: {
     alignItems: 'center',
