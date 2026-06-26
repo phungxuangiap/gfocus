@@ -25,6 +25,7 @@ import {
   blocksPerGridSegment,
   blocksPerHour,
   calendarHours,
+  checkInGraceMinutes,
   gridSegmentsPerHour,
 } from '../constants/timeBlocks';
 import {
@@ -35,8 +36,10 @@ import {
 } from '../lib/dynamicSessionOrder';
 import {
   cancelSessionCheckInNotification,
+  cancelSessionCheckOutNotification,
   markSessionStartNotificationReadBySessionId,
   scheduleSessionCheckInNotification,
+  scheduleSessionCheckOutNotification,
 } from '../lib/notifications';
 import { refreshStrictModeForDate } from '../lib/strictMode';
 import { supabase } from '../lib/supabase';
@@ -371,6 +374,20 @@ export function CalendarScreen() {
 
     await cancelSessionCheckInNotification(immutableCheckInSession.id);
     await markSessionStartNotificationReadBySessionId(userId, immutableCheckInSession.id);
+    await scheduleSessionCheckOutNotification({
+      categoryName: immutableCheckInSession.tasks?.task_types?.name ?? null,
+      plannedEndTime: immutableCheckInSession.planned_end_time,
+      plannedStartTime: immutableCheckInSession.planned_start_time,
+      sessionId: immutableCheckInSession.id,
+      taskTitle: immutableCheckInSession.tasks?.title ?? null,
+      title: immutableCheckInSession.title,
+      userId,
+    }).catch((scheduleError) => {
+      console.log('[notifications] immutable checkout schedule failed', {
+        message: scheduleError instanceof Error ? scheduleError.message : String(scheduleError),
+        sessionId: immutableCheckInSession.id,
+      });
+    });
     dispatch(setFocusSession({
       categoryName: immutableCheckInSession.tasks?.task_types?.name ?? null,
       notificationId: `immutable-overdue-${immutableCheckInSession.id}`,
@@ -612,6 +629,7 @@ export function CalendarScreen() {
     }
 
     await cancelSessionCheckInNotification(selectedSession.id);
+    await cancelSessionCheckOutNotification(selectedSession.id);
     setSelectedSession(null);
     loadCalendarData();
   }
@@ -1067,7 +1085,7 @@ function CreateModal({
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={creationMode !== null}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.modalBackdrop}
       >
         <View style={styles.formModalCard}>
@@ -1392,7 +1410,10 @@ function SessionDetailModal({
 
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
-      <View style={styles.modalBackdrop}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.modalBackdrop}
+      >
         <View style={styles.sessionDetailCard}>
           <View style={styles.modalHeader}>
             <View style={styles.sessionDetailTitleWrap}>
@@ -1403,7 +1424,7 @@ function SessionDetailModal({
               <Ionicons color={colors.text} name="close" size={24} />
             </Pressable>
           </View>
-          <ScrollView contentContainerStyle={styles.sessionDetailBody} showsVerticalScrollIndicator={false}>
+          <ScrollView contentContainerStyle={styles.sessionDetailBody} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             {editing ? (
               <>
                 <ChoiceGroup
@@ -1472,7 +1493,7 @@ function SessionDetailModal({
             )}
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -1949,7 +1970,7 @@ function isImmutableOverdueForCheckIn(session: SessionRow, now: Date) {
   return session.session_type === 'immutable' &&
     !session.checked_in &&
     !session.actual_end_time &&
-    new Date(session.planned_start_time).getTime() < now.getTime();
+    new Date(session.planned_start_time).getTime() + checkInGraceMinutes * 60 * 1000 < now.getTime();
 }
 
 function isSameDay(left: Date, right: Date) {

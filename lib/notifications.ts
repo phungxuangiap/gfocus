@@ -8,6 +8,8 @@ const TEST_CHANNEL_ID = 'gfocus-test';
 const SESSION_START_ALARM_CHANNEL_ID = 'strict_session_start_alarm_v2';
 const SESSION_START_CATEGORY_ID = 'gfocus_session_start';
 const SESSION_START_CHECK_IN_ACTION_ID = 'gfocus_session_start_check_in';
+const SESSION_COMPLETE_CATEGORY_ID = 'gfocus_session_complete';
+const SESSION_COMPLETE_FINISH_ACTION_ID = 'gfocus_session_complete_finish';
 const ANDROID_CHECKIN_SOUND_RESOURCE = 'checkin_sound';
 const IOS_CHECKIN_SOUND_FILE = 'checkin_sound.mp3';
 const CHECKIN_TIMEOUT_MS = 5 * 60 * 1000;
@@ -17,6 +19,7 @@ const checkinSoundSource = require('../assets/sounds/checkin_sound.mp3');
 let sessionStartPlayer: AudioPlayer | null = null;
 let sessionStartSystemNotificationIds: string[] = [];
 const sessionCheckInNotificationIds = new Map<string, string>();
+const sessionCheckOutNotificationIds = new Map<string, string>();
 let sessionStartDelayLogTimeout: ReturnType<typeof setTimeout> | null = null;
 let sessionStartTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -24,6 +27,7 @@ export type SessionStartNotificationEvent = {
   categoryName?: string | null;
   notificationId: string;
   notificationRecordId?: string;
+  notificationType?: 'session_start' | 'session_completed';
   plannedEndTime?: string;
   plannedStartTime?: string;
   sessionId?: string;
@@ -42,9 +46,14 @@ export type SessionCheckInSchedule = {
   userId: string;
 };
 
+export type SessionCheckOutSchedule = SessionCheckInSchedule;
+
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
-    if (notification.request.content.data?.notificationType === 'session_start') {
+    if (
+      notification.request.content.data?.notificationType === 'session_start'
+      || notification.request.content.data?.notificationType === 'session_completed'
+    ) {
       return {
         shouldPlaySound: false,
         shouldSetBadge: false,
@@ -105,6 +114,15 @@ async function prepareSessionStartAlarmNotifications() {
       },
     },
   ]);
+  await Notifications.setNotificationCategoryAsync(SESSION_COMPLETE_CATEGORY_ID, [
+    {
+      buttonTitle: 'FINISH',
+      identifier: SESSION_COMPLETE_FINISH_ACTION_ID,
+      options: {
+        opensAppToForeground: true,
+      },
+    },
+  ]);
 
   if (Platform.OS === 'android') {
     logNotification('using Android channel: strict_session_start_alarm_v2');
@@ -136,7 +154,7 @@ async function storeNotificationRecord(userId: string, payload: {
   severity: 'soft' | 'normal' | 'strict';
   sessionId?: string;
   title: string;
-  type: 'plan_reminder' | 'session_start';
+  type: 'plan_reminder' | 'session_start' | 'session_completed';
 }) {
   if (!supabase) {
     throw new Error('Missing Supabase config.');
@@ -165,7 +183,7 @@ async function storeNotificationRecord(userId: string, payload: {
 }
 
 async function updateNotificationLifecycle(
-  event: Pick<SessionStartNotificationEvent, 'notificationRecordId' | 'sessionId' | 'userId'>,
+  event: Pick<SessionStartNotificationEvent, 'notificationRecordId' | 'notificationType' | 'sessionId' | 'userId'>,
   values: {
     readAt?: Date;
     sentAt?: Date;
@@ -188,7 +206,7 @@ async function updateNotificationLifecycle(
     .from('notifications')
     .update(updateValues)
     .eq('user_id', event.userId)
-    .eq('type', 'session_start');
+    .eq('type', event.notificationType ?? 'session_start');
 
   if (event.notificationRecordId) {
     query = query.eq('id', event.notificationRecordId);
@@ -224,6 +242,30 @@ export async function markSessionStartNotificationRead(event: SessionStartNotifi
 export async function markSessionStartNotificationReadBySessionId(userId: string, sessionId: string) {
   await markSessionStartNotificationRead({
     notificationId: `session-${sessionId}`,
+    sessionId,
+    userId,
+  });
+}
+
+export async function markSessionCompleteNotificationSent(event: SessionStartNotificationEvent) {
+  await updateNotificationLifecycle({ ...event, notificationType: 'session_completed' }, { sentAt: new Date() });
+}
+
+export async function markSessionCompleteNotificationRead(event: SessionStartNotificationEvent) {
+  const now = new Date();
+  await updateNotificationLifecycle(
+    { ...event, notificationType: 'session_completed' },
+    {
+      readAt: now,
+      sentAt: now,
+    },
+  );
+}
+
+export async function markSessionCompleteNotificationReadBySessionId(userId: string, sessionId: string) {
+  await markSessionCompleteNotificationRead({
+    notificationId: `session-complete-${sessionId}`,
+    notificationType: 'session_completed',
     sessionId,
     userId,
   });
@@ -335,6 +377,33 @@ export function addSessionStartForegroundListener(options: {
   });
 }
 
+export function addSessionCompleteForegroundListener(options: {
+  onForegroundAlarm: (event: SessionStartNotificationEvent) => void;
+}) {
+  return Notifications.addNotificationReceivedListener((notification) => {
+    if (notification.request.content.data?.notificationType !== 'session_completed') {
+      return;
+    }
+
+    const event = getSessionStartEvent(notification);
+
+    logNotification('session checkout notification delivered', {
+      notificationId: notification.request.identifier,
+      sessionId: event.sessionId,
+    });
+    logNotification('current app state: foreground');
+
+    Notifications.dismissNotificationAsync(notification.request.identifier).catch(() => undefined);
+    markSessionCompleteNotificationSent(event).catch((error) => {
+      logNotification('checkout notification sent_at update failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    options.onForegroundAlarm(event);
+  });
+}
+
 export function addSessionStartCheckInActionListener(onCheckIn: (event: SessionStartNotificationEvent) => void) {
   return Notifications.addNotificationResponseReceivedListener((response) => {
     if (response.actionIdentifier !== SESSION_START_CHECK_IN_ACTION_ID) {
@@ -355,6 +424,26 @@ export function addSessionStartCheckInActionListener(onCheckIn: (event: SessionS
   });
 }
 
+export function addSessionCompleteFinishActionListener(onFinish: (event: SessionStartNotificationEvent) => void) {
+  return Notifications.addNotificationResponseReceivedListener((response) => {
+    if (response.actionIdentifier !== SESSION_COMPLETE_FINISH_ACTION_ID) {
+      return;
+    }
+
+    logNotification('finish action clicked', { source: 'system notification' });
+    Notifications.cancelScheduledNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+    Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+    stopSessionStartRepeatingSound('finish action clicked');
+    const event = getSessionStartEvent(response.notification);
+    markSessionCompleteNotificationRead(event).catch((error) => {
+      logNotification('checkout notification read_at update failed', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+    onFinish(event);
+  });
+}
+
 export async function getLastSessionStartCheckInActionEvent() {
   const response = await Notifications.getLastNotificationResponseAsync();
 
@@ -371,6 +460,22 @@ export async function getLastSessionStartCheckInActionEvent() {
   return event;
 }
 
+export async function getLastSessionCompleteFinishActionEvent() {
+  const response = await Notifications.getLastNotificationResponseAsync();
+
+  if (!response || response.actionIdentifier !== SESSION_COMPLETE_FINISH_ACTION_ID) {
+    return null;
+  }
+
+  await Notifications.clearLastNotificationResponseAsync();
+  logNotification('finish action clicked', { source: 'last notification response' });
+  Notifications.cancelScheduledNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+  Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+  const event = getSessionStartEvent(response.notification);
+  await markSessionCompleteNotificationRead(event);
+  return event;
+}
+
 function getStringData(data: Record<string, unknown>, key: string) {
   const value = data[key];
   return typeof value === 'string' ? value : undefined;
@@ -383,6 +488,7 @@ function getSessionStartEvent(notification: Notifications.Notification): Session
     categoryName: getStringData(data, 'categoryName') ?? null,
     notificationId: notification.request.identifier,
     notificationRecordId: getStringData(data, 'notificationRecordId'),
+    notificationType: getStringData(data, 'notificationType') as SessionStartNotificationEvent['notificationType'],
     plannedEndTime: getStringData(data, 'plannedEndTime'),
     plannedStartTime: getStringData(data, 'plannedStartTime'),
     sessionId: getStringData(data, 'sessionId'),
@@ -401,6 +507,8 @@ async function scheduleSessionStartSystemNotification(
   data: Record<string, unknown> = {},
   content: {
     body?: string;
+    categoryIdentifier?: string;
+    notificationType?: 'session_start' | 'session_completed';
     title?: string;
   } = {},
 ) {
@@ -408,9 +516,9 @@ async function scheduleSessionStartSystemNotification(
     content: {
       autoDismiss: false,
       body: content.body ?? 'Your session is starting now. Tap CHECK IN to stop the alert.',
-      categoryIdentifier: SESSION_START_CATEGORY_ID,
+      categoryIdentifier: content.categoryIdentifier ?? SESSION_START_CATEGORY_ID,
       data: {
-        notificationType: 'session_start',
+        notificationType: content.notificationType ?? 'session_start',
         severity: 'strict',
         ...data,
       },
@@ -445,6 +553,29 @@ export async function cancelSessionCheckInNotification(sessionId: string) {
         .delete()
         .eq('session_id', sessionId)
         .eq('type', 'session_start')
+        .is('sent_at', null);
+    } catch {
+      // Canceling the local notification is the critical path here.
+    }
+  }
+}
+
+export async function cancelSessionCheckOutNotification(sessionId: string) {
+  const notificationId = sessionCheckOutNotificationIds.get(sessionId);
+
+  if (notificationId) {
+    await Notifications.cancelScheduledNotificationAsync(notificationId).catch(() => undefined);
+    await Notifications.dismissNotificationAsync(notificationId).catch(() => undefined);
+    sessionCheckOutNotificationIds.delete(sessionId);
+  }
+
+  if (supabase) {
+    try {
+      await supabase
+        .from('notifications')
+        .delete()
+        .eq('session_id', sessionId)
+        .eq('type', 'session_completed')
         .is('sent_at', null);
     } catch {
       // Canceling the local notification is the critical path here.
@@ -507,6 +638,68 @@ export async function scheduleSessionCheckInNotification(payload: SessionCheckIn
   logNotification('session_start strict notification scheduled', {
     notificationId,
     secondsUntilStart,
+    sessionId: payload.sessionId,
+  });
+}
+
+export async function scheduleSessionCheckOutNotification(payload: SessionCheckOutSchedule) {
+  logNotification('checkout notification triggered', {
+    scheduledAt: payload.plannedEndTime,
+    sessionId: payload.sessionId,
+    severity: 'strict',
+    type: 'session_completed',
+  });
+
+  const hasPermission = await prepareSessionStartAlarmNotifications();
+
+  if (!hasPermission) {
+    throw new Error('Notification permission was not granted.');
+  }
+
+  await cancelSessionCheckOutNotification(payload.sessionId);
+
+  const scheduledAt = new Date(payload.plannedEndTime);
+  const secondsUntilEnd = Math.max(1, Math.round((scheduledAt.getTime() - Date.now()) / 1000));
+  const body = payload.taskTitle
+    ? `${payload.taskTitle} planned time is over. Tap FINISH to close the session.`
+    : 'Your planned session time is over. Tap FINISH to close the session.';
+
+  const notificationRecordId = await storeNotificationRecord(payload.userId, {
+    message: body,
+    scheduledAt,
+    sessionId: payload.sessionId,
+    severity: 'strict',
+    title: payload.title,
+    type: 'session_completed',
+  });
+
+  const notificationId = await scheduleSessionStartSystemNotification(
+    secondsUntilEnd,
+    {
+      categoryName: payload.categoryName ?? undefined,
+      notificationRecordId,
+      notificationType: 'session_completed',
+      plannedEndTime: payload.plannedEndTime,
+      plannedStartTime: payload.plannedStartTime,
+      sessionId: payload.sessionId,
+      source: 'session_checkout',
+      taskTitle: payload.taskTitle ?? undefined,
+      title: payload.title,
+      userId: payload.userId,
+    },
+    {
+      body,
+      categoryIdentifier: SESSION_COMPLETE_CATEGORY_ID,
+      notificationType: 'session_completed',
+      title: `${payload.title} complete`,
+    },
+  );
+
+  sessionCheckOutNotificationIds.set(payload.sessionId, notificationId);
+
+  logNotification('session_completed strict notification scheduled', {
+    notificationId,
+    secondsUntilEnd,
     sessionId: payload.sessionId,
   });
 }

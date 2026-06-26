@@ -18,12 +18,18 @@ import { RankingScreen } from './components/RankingScreen';
 import { TaskScreen } from './components/TaskScreen';
 import { colors, shadowHard } from './constants/theme';
 import {
+  addSessionCompleteFinishActionListener,
+  addSessionCompleteForegroundListener,
   addSessionStartCheckInActionListener,
   addSessionStartForegroundListener,
+  getLastSessionCompleteFinishActionEvent,
   getLastSessionStartCheckInActionEvent,
   cancelSessionCheckInNotification,
+  cancelSessionCheckOutNotification,
+  markSessionCompleteNotificationReadBySessionId,
   markSessionStartNotificationRead,
   markSessionStartNotificationReadBySessionId,
+  scheduleSessionCheckOutNotification,
   stopSessionStartRepeatingSound,
   type SessionStartNotificationEvent,
 } from './lib/notifications';
@@ -107,6 +113,7 @@ function MainShell() {
   const strictModeEnabled = useAppSelector((state) => state.app.strictModeEnabled);
   const session = useAppSelector((state) => state.auth.session);
   const [checkInEvent, setCheckInEvent] = useState<SessionStartNotificationEvent | null>(null);
+  const [checkoutAlarmEvent, setCheckoutAlarmEvent] = useState<SessionStartNotificationEvent | null>(null);
   const [checkingIn, setCheckingIn] = useState(false);
   const [finishingFocus, setFinishingFocus] = useState(false);
   const [strictNoticeVisible, setStrictNoticeVisible] = useState(false);
@@ -141,14 +148,34 @@ function MainShell() {
       return;
     }
 
+    if (event.plannedEndTime && event.plannedStartTime) {
+      try {
+        await scheduleSessionCheckOutNotification({
+          categoryName: event.categoryName ?? null,
+          plannedEndTime: event.plannedEndTime,
+          plannedStartTime: event.plannedStartTime,
+          sessionId: event.sessionId,
+          taskTitle: event.taskTitle ?? null,
+          title: event.title ?? 'Session',
+          userId,
+        });
+      } catch (scheduleError) {
+        console.log('[notifications] checkout schedule failed', {
+          message: scheduleError instanceof Error ? scheduleError.message : String(scheduleError),
+          sessionId: event.sessionId,
+        });
+      }
+    }
+
     setCheckingIn(false);
     setCheckInEvent(null);
     dispatch(setFocusSession(event));
   }
 
-  async function finishFocusSession() {
-    if (!supabase || !userId || !focusEvent?.sessionId) {
+  async function finishSessionByEvent(event: SessionStartNotificationEvent | null) {
+    if (!supabase || !userId || !event?.sessionId) {
       dispatch(setFocusSession(null));
+      setCheckoutAlarmEvent(null);
       return;
     }
 
@@ -158,22 +185,29 @@ function MainShell() {
       .update({
         actual_end_time: new Date().toISOString(),
       })
-      .eq('id', focusEvent.sessionId)
+      .eq('id', event.sessionId)
       .eq('user_id', userId);
 
     if (error) {
       console.log('[focus] session finish update failed', {
         message: error.message,
-        sessionId: focusEvent.sessionId,
+        sessionId: event.sessionId,
       });
       setFinishingFocus(false);
       return;
     }
 
-    await cancelSessionCheckInNotification(focusEvent.sessionId);
-    await markSessionStartNotificationReadBySessionId(userId, focusEvent.sessionId);
+    await cancelSessionCheckInNotification(event.sessionId);
+    await cancelSessionCheckOutNotification(event.sessionId);
+    await markSessionStartNotificationReadBySessionId(userId, event.sessionId);
+    await markSessionCompleteNotificationReadBySessionId(userId, event.sessionId);
     setFinishingFocus(false);
+    setCheckoutAlarmEvent(null);
     dispatch(setFocusSession(null));
+  }
+
+  async function finishFocusSession() {
+    await finishSessionByEvent(focusEvent);
   }
 
   useEffect(() => {
@@ -181,9 +215,24 @@ function MainShell() {
       onForegroundAlarm: (event) => setCheckInEvent(event),
       onTimeout: () => setCheckInEvent(null),
     });
+    const checkoutForegroundSubscription = addSessionCompleteForegroundListener({
+      onForegroundAlarm: (event) => {
+        if (event.sessionId) {
+          dispatch(setFocusSession(event));
+        }
+        setCheckoutAlarmEvent(event);
+      },
+    });
     const checkInSubscription = addSessionStartCheckInActionListener((event) => {
       checkInSession(event).catch((error) => {
         console.log('[notifications] check-in action failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    const finishSubscription = addSessionCompleteFinishActionListener((event) => {
+      finishSessionByEvent(event).catch((error) => {
+        console.log('[notifications] finish action failed', {
           message: error instanceof Error ? error.message : String(error),
         });
       });
@@ -201,10 +250,25 @@ function MainShell() {
           message: error instanceof Error ? error.message : String(error),
         });
       });
+    getLastSessionCompleteFinishActionEvent()
+      .then((event) => {
+        if (event) {
+          return finishSessionByEvent(event);
+        }
+
+        return undefined;
+      })
+      .catch((error) => {
+        console.log('[notifications] last finish action failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
 
     return () => {
       foregroundSubscription.remove();
+      checkoutForegroundSubscription.remove();
       checkInSubscription.remove();
+      finishSubscription.remove();
       stopSessionStartRepeatingSound('main shell unmounted');
     };
   }, [userId]);
@@ -267,7 +331,12 @@ function MainShell() {
   if (focusEvent) {
     return (
       <>
-        <FocusScreen event={focusEvent} finishing={finishingFocus} onFinish={finishFocusSession} />
+        <FocusScreen
+          checkoutAlarmEvent={checkoutAlarmEvent}
+          event={focusEvent}
+          finishing={finishingFocus}
+          onFinish={finishFocusSession}
+        />
         <StatusBar backgroundColor="transparent" hidden translucent />
       </>
     );

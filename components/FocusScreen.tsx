@@ -5,12 +5,13 @@ import { colors, shadowHard } from '../constants/theme';
 import { startSessionStartAlertSound, stopSessionStartRepeatingSound, type SessionStartNotificationEvent } from '../lib/notifications';
 
 type FocusScreenProps = {
+  checkoutAlarmEvent?: SessionStartNotificationEvent | null;
   event: SessionStartNotificationEvent;
   finishing: boolean;
   onFinish: () => void;
 };
 
-export function FocusScreen({ event, finishing, onFinish }: FocusScreenProps) {
+export function FocusScreen({ checkoutAlarmEvent, event, finishing, onFinish }: FocusScreenProps) {
   const plannedEndTime = useMemo(() => {
     const fallback = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     return event.plannedEndTime ?? fallback;
@@ -51,6 +52,14 @@ export function FocusScreen({ event, finishing, onFinish }: FocusScreenProps) {
       });
     });
   }, [finishModalVisible]);
+
+  useEffect(() => {
+    if (!checkoutAlarmEvent || checkoutAlarmEvent.sessionId !== event.sessionId) {
+      return;
+    }
+
+    setFinishModalVisible(true);
+  }, [checkoutAlarmEvent, event.sessionId]);
 
   function finishSession() {
     stopSessionStartRepeatingSound('finish session clicked');

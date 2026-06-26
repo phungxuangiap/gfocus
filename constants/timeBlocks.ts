@@ -1,4 +1,5 @@
 export const blockDurationMinutes = 5;
+export const checkInGraceMinutes = 5;
 export const sleepHoursPerDay = 6;
 
 export const blocksPerHour = 60 / blockDurationMinutes;

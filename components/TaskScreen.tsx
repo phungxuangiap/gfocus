@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -385,10 +387,10 @@ function CreateTaskModal({
 
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
-      <View style={styles.modalBackdrop}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CREATE" title="TASK" onClose={onClose} />
-          <ScrollView contentContainerStyle={styles.modalBody}>
+          <ScrollView contentContainerStyle={styles.modalBody} keyboardShouldPersistTaps="handled">
             <Field label="TITLE" onChangeText={(title) => setForm({ ...form, title })} value={form.title} />
             <Field label="DESCRIPTION" onChangeText={(description) => setForm({ ...form, description })} value={form.description} />
             <ChoiceGroup
@@ -413,7 +415,7 @@ function CreateTaskModal({
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -447,10 +449,10 @@ function CreateCategoryModal({
 
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
-      <View style={styles.modalBackdrop}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CREATE" title="CATEGORY" onClose={onClose} />
-          <ScrollView contentContainerStyle={styles.modalBody}>
+          <ScrollView contentContainerStyle={styles.modalBody} keyboardShouldPersistTaps="handled">
             <Field label="NAME" onChangeText={(name) => setForm({ ...form, name })} value={form.name} />
             <Field label="DESCRIPTION" onChangeText={(description) => setForm({ ...form, description })} value={form.description} />
             <Field label="COLOR" onChangeText={(color) => setForm({ ...form, color })} value={form.color} />
@@ -464,7 +466,7 @@ function CreateCategoryModal({
             </Pressable>
           </View>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -525,10 +527,10 @@ function TaskDetailModal({
 
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
-      <View style={styles.modalBackdrop}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="TASK DETAIL" title={currentTask.title} onClose={onClose} />
-          <ScrollView contentContainerStyle={styles.modalBody}>
+          <ScrollView contentContainerStyle={styles.modalBody} keyboardShouldPersistTaps="handled">
             {editing ? (
               <>
                 <Field label="TITLE" onChangeText={(title) => setForm({ ...form, title })} value={form.title} />
@@ -556,7 +558,7 @@ function TaskDetailModal({
           </ScrollView>
           <ModalActions editing={editing} onCancel={() => setEditing(false)} onDelete={confirmDelete} onEdit={() => setEditing(true)} onSave={save} saving={saving} />
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -612,10 +614,10 @@ function CategoryDetailModal({
 
   return (
     <Modal animationType="slide" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
-      <View style={styles.modalBackdrop}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalBackdrop}>
         <View style={styles.modalCard}>
           <ModalHeader kicker="CATEGORY DETAIL" title={currentCategory.name} onClose={onClose} />
-          <ScrollView contentContainerStyle={styles.modalBody}>
+          <ScrollView contentContainerStyle={styles.modalBody} keyboardShouldPersistTaps="handled">
             {editing ? (
               <>
                 <Field label="NAME" onChangeText={(name) => setForm({ ...form, name })} value={form.name} />
@@ -632,7 +634,7 @@ function CategoryDetailModal({
           </ScrollView>
           <ModalActions editing={editing} onCancel={() => setEditing(false)} onDelete={confirmDelete} onEdit={() => setEditing(true)} onSave={save} saving={saving} />
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

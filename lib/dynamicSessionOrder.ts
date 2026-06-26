@@ -1,4 +1,4 @@
-import { blockDurationMinutes, blocksPerDay } from '../constants/timeBlocks';
+import { blockDurationMinutes, blocksPerDay, checkInGraceMinutes } from '../constants/timeBlocks';
 import { supabase } from './supabase';
 
 type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
@@ -170,7 +170,7 @@ export async function reorderTodaySessions(
     .filter((session) => session.originalStart < nextDayStart)
     .sort((left, right) => left.originalStart.getTime() - right.originalStart.getTime());
 
-  const lateSessions = movableSessions.filter((session) => session.originalStart < currentTime);
+  const lateSessions = movableSessions.filter((session) => isPastCheckInGrace(session.originalStart, currentTime));
   const shouldReorder = lateSessions.length > 0 || reservedIntervals.length > 0;
   if (!shouldReorder) {
     return {
@@ -259,6 +259,10 @@ function isLockedSession(session: PositionedSession) {
 
 function isMovableSession(session: PositionedSession) {
   return !session.actual_end_time && session.checked_in !== true && session.session_type === 'mutable';
+}
+
+function isPastCheckInGrace(start: Date, currentTime: Date) {
+  return start.getTime() + checkInGraceMinutes * 60 * 1000 < currentTime.getTime();
 }
 
 function planMovableSessions({
