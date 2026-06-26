@@ -342,6 +342,8 @@ export function addSessionStartCheckInActionListener(onCheckIn: (event: SessionS
     }
 
     logNotification('check-in action clicked', { source: 'system notification' });
+    Notifications.cancelScheduledNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+    Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => undefined);
     stopSessionStartRepeatingSound('check-in action clicked');
     const event = getSessionStartEvent(response.notification);
     markSessionStartNotificationRead(event).catch((error) => {
@@ -362,6 +364,8 @@ export async function getLastSessionStartCheckInActionEvent() {
 
   await Notifications.clearLastNotificationResponseAsync();
   logNotification('check-in action clicked', { source: 'last notification response' });
+  Notifications.cancelScheduledNotificationAsync(response.notification.request.identifier).catch(() => undefined);
+  Notifications.dismissNotificationAsync(response.notification.request.identifier).catch(() => undefined);
   const event = getSessionStartEvent(response.notification);
   await markSessionStartNotificationRead(event);
   return event;

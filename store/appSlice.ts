@@ -1,7 +1,7 @@
 import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
 
 export type AppMode = 'plan' | 'focus';
-export type BottomTab = 'calendar' | 'task' | 'profile';
+export type BottomTab = 'calendar' | 'task' | 'ranking' | 'profile';
 export type CalendarView = 'day' | 'week' | 'month';
 
 export type FocusSessionEvent = {
@@ -25,7 +25,7 @@ type AppState = {
 };
 
 const initialState: AppState = {
-  activeTab: 'profile',
+  activeTab: 'calendar',
   calendarView: 'week',
   focusSession: null,
   mode: 'plan',

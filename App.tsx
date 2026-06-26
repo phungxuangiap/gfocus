@@ -14,6 +14,7 @@ import { AuthScreen } from './components/AuthScreen';
 import { CalendarScreen } from './components/CalendarScreen';
 import { FocusScreen } from './components/FocusScreen';
 import { ProfileScreen } from './components/ProfileScreen';
+import { RankingScreen } from './components/RankingScreen';
 import { TaskScreen } from './components/TaskScreen';
 import { colors, shadowHard } from './constants/theme';
 import {
@@ -277,6 +278,7 @@ function MainShell() {
       <View style={[styles.scene, strictModeEnabled && styles.sceneStrict]}>
         {activeTab === 'calendar' ? <CalendarScreen /> : null}
         {activeTab === 'task' ? <TaskScreen /> : null}
+        {activeTab === 'ranking' ? <RankingScreen /> : null}
         {activeTab === 'profile' ? <ProfileScreen /> : null}
       </View>
       <View style={[styles.bottomNav, strictModeEnabled && styles.bottomNavStrict, { paddingBottom: Math.max(insets.bottom, 10) }]}>
@@ -291,21 +293,30 @@ function MainShell() {
         </Pressable>
         <Pressable
           accessibilityRole="tab"
-          accessibilityState={{ selected: activeTab === 'profile' }}
-          onPress={() => dispatch(setActiveTab('profile'))}
-          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'profile' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
-        >
-          <Ionicons color={activeTab === 'profile' ? colors.paper : colors.text} name="person-circle-outline" size={24} />
-          <Text style={[styles.navLabel, activeTab === 'profile' && styles.navLabelActive]}>Profile</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole="tab"
           accessibilityState={{ selected: activeTab === 'task' }}
           onPress={() => dispatch(setActiveTab('task'))}
           style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'task' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
         >
           <Ionicons color={activeTab === 'task' ? colors.paper : colors.text} name="list-circle-outline" size={24} />
           <Text style={[styles.navLabel, activeTab === 'task' && styles.navLabelActive]}>Task</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'ranking' }}
+          onPress={() => dispatch(setActiveTab('ranking'))}
+          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'ranking' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
+        >
+          <Ionicons color={activeTab === 'ranking' ? colors.paper : colors.text} name="trophy-outline" size={24} />
+          <Text style={[styles.navLabel, activeTab === 'ranking' && styles.navLabelActive]}>Ranking</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole="tab"
+          accessibilityState={{ selected: activeTab === 'profile' }}
+          onPress={() => dispatch(setActiveTab('profile'))}
+          style={[styles.navItem, strictModeEnabled && styles.navItemStrict, activeTab === 'profile' && (strictModeEnabled ? styles.navItemActiveStrict : styles.navItemActive)]}
+        >
+          <Ionicons color={activeTab === 'profile' ? colors.paper : colors.text} name="person-circle-outline" size={24} />
+          <Text style={[styles.navLabel, activeTab === 'profile' && styles.navLabelActive]}>Profile</Text>
         </Pressable>
       </View>
       <SessionCheckInModal
@@ -493,11 +504,11 @@ const styles = StyleSheet.create({
     borderTopWidth: 3,
     bottom: 0,
     flexDirection: 'row',
-    gap: 10,
+    gap: 6,
     justifyContent: 'space-between',
     left: 0,
     minHeight: 76,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     paddingVertical: 10,
     position: 'absolute',
     right: 0,
@@ -515,7 +526,7 @@ const styles = StyleSheet.create({
     gap: 8,
     justifyContent: 'center',
     minHeight: 48,
-    paddingHorizontal: 14,
+    paddingHorizontal: 8,
   },
   navItemActive: {
     backgroundColor: colors.primary,
@@ -529,7 +540,7 @@ const styles = StyleSheet.create({
   navLabel: {
     color: colors.text,
     fontFamily: 'IBMPlexMono_700Bold',
-    fontSize: 12,
+    fontSize: 10,
     letterSpacing: 1,
   },
   navLabelActive: {

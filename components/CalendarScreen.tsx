@@ -5,6 +5,7 @@ import {
   Animated,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -141,10 +142,14 @@ export function CalendarScreen() {
   const [selectedNextDayStart, setSelectedNextDayStart] = useState('');
   const nextDayMoveResolver = useRef<((decision: NextDayMoveDecision) => void) | null>(null);
   const sidebarTranslate = useRef(new Animated.Value(360)).current;
+  const calendarTranslate = useRef(new Animated.Value(0)).current;
+  const calendarOpacity = useRef(new Animated.Value(1)).current;
   const [now, setNow] = useState(new Date());
-  const today = useMemo(() => new Date(), []);
-  const weekDays = useMemo(() => getWeekDays(today), [today]);
-  const monthDays = useMemo(() => getMonthGrid(today), [today]);
+  const today = useMemo(() => startOfDay(new Date()), []);
+  const [visibleDate, setVisibleDate] = useState(() => startOfDay(new Date()));
+  const weekDays = useMemo(() => getWeekDays(visibleDate), [visibleDate]);
+  const monthDays = useMemo(() => getMonthGrid(visibleDate), [visibleDate]);
+  const visibleRange = useMemo(() => getVisibleRange(view, visibleDate), [view, visibleDate]);
   const userId = session?.user.id;
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const categoryById = useMemo(() => new Map(taskTypes.map((type) => [type.id, type])), [taskTypes]);
@@ -177,6 +182,50 @@ export function CalendarScreen() {
       return true;
     }),
     [categoryFilter, sessions, taskById, taskFilter],
+  );
+  const changeVisibleDate = useCallback((direction: 1 | -1) => {
+    Animated.parallel([
+      Animated.timing(calendarTranslate, {
+        duration: 120,
+        toValue: direction * -36,
+        useNativeDriver: true,
+      }),
+      Animated.timing(calendarOpacity, {
+        duration: 120,
+        toValue: 0.35,
+        useNativeDriver: true,
+      }),
+    ]).start(() => {
+      setVisibleDate((current) => shiftVisibleDate(current, view, direction));
+      calendarTranslate.setValue(direction * 36);
+      Animated.parallel([
+        Animated.timing(calendarTranslate, {
+          duration: 180,
+          toValue: 0,
+          useNativeDriver: true,
+        }),
+        Animated.timing(calendarOpacity, {
+          duration: 180,
+          toValue: 1,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    });
+  }, [calendarOpacity, calendarTranslate, view]);
+  const panResponder = useMemo(
+    () => PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 28 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (Math.abs(gestureState.dx) < 48) {
+          return;
+        }
+
+        changeVisibleDate(gestureState.dx < 0 ? 1 : -1);
+      },
+    }),
+    [changeVisibleDate],
   );
 
   const confirmNextDayMove = useCallback((request: NextDayMoveRequest) => {
@@ -240,9 +289,6 @@ export function CalendarScreen() {
       await syncReorderNotifications(reorderResult);
     }
 
-    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-    const monthEnd = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-
     const [{ data: typeRows, error: typeError }, { data: taskRows, error: taskError }, { data: sessionRows, error: sessionError }] =
       await Promise.all([
         supabase
@@ -260,8 +306,8 @@ export function CalendarScreen() {
           .from('sessions')
           .select('id, task_id, title, description, session_type, planned_start_time, planned_end_time, actual_end_time, block_count, checked_in, tasks(title, priority, task_types(name, color))')
           .eq('user_id', userId)
-          .gte('planned_start_time', monthStart.toISOString())
-          .lt('planned_start_time', monthEnd.toISOString())
+          .gte('planned_start_time', visibleRange.start.toISOString())
+          .lt('planned_start_time', visibleRange.end.toISOString())
           .order('planned_start_time', { ascending: true }),
       ]);
 
@@ -291,7 +337,7 @@ export function CalendarScreen() {
           message: error instanceof Error ? error.message : String(error),
         });
       });
-  }, [confirmNextDayMove, dispatch, focusSession, syncReorderNotifications, today, userId]);
+  }, [confirmNextDayMove, dispatch, focusSession, syncReorderNotifications, today, userId, visibleRange]);
 
   function resolveNextDayMove(decision: NextDayMoveDecision) {
     nextDayMoveResolver.current?.(decision);
@@ -765,7 +811,14 @@ export function CalendarScreen() {
         <View style={styles.header}>
           <Text style={styles.kicker}>BLOCK CALENDAR</Text>
           <View style={styles.titleRow}>
-            <Text style={styles.title}>CALENDAR</Text>
+            <View style={styles.titleTagRow}>
+              <Text style={styles.title}>CALENDAR</Text>
+              {strictModeEnabled ? (
+                <View style={styles.strictStickyTag}>
+                  <Text style={styles.strictStickyTagText}>STRICT</Text>
+                </View>
+              ) : null}
+            </View>
             <Pressable accessibilityLabel="Open task sidebar" accessibilityRole="button" onPress={() => setTaskSidebarVisible(true)} style={styles.sidebarIconButton}>
               <Ionicons color={colors.text} name="list-outline" size={24} />
             </Pressable>
@@ -773,16 +826,20 @@ export function CalendarScreen() {
           <Text style={styles.subtitle}>Plan categories, tasks, and sessions on 5-minute blocks.</Text>
         </View>
 
-        {loading ? (
-          <View style={styles.loadingPanel}>
-            <ActivityIndicator color={colors.primary} />
-            <Text style={styles.loadingText}>LOADING CALENDAR</Text>
-          </View>
-        ) : null}
-
-        {view === 'day' ? <DayView date={today} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
-        {view === 'week' ? <WeekView days={weekDays} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
-        {view === 'month' ? <MonthView baseDate={today} days={monthDays} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+        <Animated.View
+          {...panResponder.panHandlers}
+          style={[
+            styles.calendarSwipeBody,
+            {
+              opacity: calendarOpacity,
+              transform: [{ translateX: calendarTranslate }],
+            },
+          ]}
+        >
+          {view === 'day' ? <DayView date={visibleDate} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+          {view === 'week' ? <WeekView days={weekDays} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+          {view === 'month' ? <MonthView baseDate={visibleDate} days={monthDays} now={now} onSelectSession={setSelectedSession} sessions={filteredSessions} /> : null}
+        </Animated.View>
       </ScrollView>
 
       <Pressable accessibilityRole="button" onPress={() => setCreationMode('session')} style={styles.fab}>
@@ -1185,14 +1242,19 @@ function TaskSidebar({
   view: CalendarView;
   visible: boolean;
 }) {
+  const insets = useSafeAreaInsets();
   const selectedType = taskTypes.find((type) => type.id === categoryFilter);
   const selectedTask = totalTasks.find((task) => task.id === taskFilter);
+  const sidebarSafePadding = {
+    paddingBottom: Math.max(18, insets.bottom + 12),
+    paddingTop: Math.max(34, insets.top + 14),
+  };
 
   return (
     <Modal animationType="fade" navigationBarTranslucent onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent transparent visible={visible}>
       <View style={styles.sidebarLayer}>
         <Pressable accessibilityRole="button" onPress={onClose} style={styles.sidebarShade} />
-        <Animated.View style={[styles.sidebarPanel, { transform: [{ translateX }] }]}>
+        <Animated.View style={[styles.sidebarPanel, sidebarSafePadding, { transform: [{ translateX }] }]}>
           <View style={styles.sidebarHeader}>
             <View>
               <Text style={styles.modalKicker}>SESSION FILTER</Text>
@@ -1567,11 +1629,13 @@ function CurrentTimeLine({
 function MonthView({
   baseDate,
   days,
+  now,
   onSelectSession,
   sessions,
 }: {
   baseDate: Date;
   days: Date[];
+  now: Date;
   onSelectSession: (session: SessionRow) => void;
   sessions: SessionRow[];
 }) {
@@ -1585,7 +1649,7 @@ function MonthView({
       <View style={styles.monthGrid}>
         {days.map((day, index) => {
           const isCurrentMonth = day.getMonth() === baseDate.getMonth();
-          const isToday = isSameDay(day, baseDate);
+          const isToday = isSameDay(day, now);
           const daySessions = sessions.filter((item) => isSameDay(new Date(item.planned_start_time), day));
           const count = daySessions.length;
 
@@ -1740,12 +1804,53 @@ async function syncDaySessionBlocks(userId: string, date: Date) {
 function getWeekDays(date: Date) {
   const start = new Date(date);
   start.setDate(date.getDate() - date.getDay());
+  start.setHours(0, 0, 0, 0);
 
   return Array.from({ length: 7 }, (_, index) => {
     const day = new Date(start);
     day.setDate(start.getDate() + index);
     return day;
   });
+}
+
+function getVisibleRange(view: CalendarView, date: Date) {
+  if (view === 'day') {
+    const start = startOfDay(date);
+    return { start, end: addDays(start, 1) };
+  }
+
+  if (view === 'week') {
+    const start = getWeekDays(date)[0];
+    return { start, end: addDays(start, 7) };
+  }
+
+  const start = new Date(date.getFullYear(), date.getMonth(), 1);
+  return { start, end: new Date(date.getFullYear(), date.getMonth() + 1, 1) };
+}
+
+function shiftVisibleDate(date: Date, view: CalendarView, direction: 1 | -1) {
+  if (view === 'day') {
+    return addDays(date, direction);
+  }
+
+  if (view === 'week') {
+    return addDays(date, direction * 7);
+  }
+
+  return new Date(date.getFullYear(), date.getMonth() + direction, 1);
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(date.getDate() + days);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
 }
 
 function getMonthGrid(date: Date) {
@@ -1887,6 +1992,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
+  titleTagRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flex: 1,
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  strictStickyTag: {
+    backgroundColor: colors.danger,
+    borderColor: colors.border,
+    borderWidth: 3,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    transform: [{ rotate: '-3deg' }],
+    ...shadowHard,
+  },
+  strictStickyTagText: {
+    color: colors.paper,
+    fontFamily: 'Anton_400Regular',
+    fontSize: 18,
+    letterSpacing: 1,
+    lineHeight: 22,
+  },
   sidebarIconButton: {
     alignItems: 'center',
     backgroundColor: colors.surfaceMuted,
@@ -1902,21 +2030,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 21,
   },
-  loadingPanel: {
-    alignItems: 'center',
-    backgroundColor: colors.paper,
-    borderColor: colors.border,
-    borderWidth: 3,
-    marginBottom: 18,
-    padding: 14,
-    ...shadowHard,
-  },
-  loadingText: {
-    color: colors.textMuted,
-    fontFamily: 'IBMPlexMono_700Bold',
-    fontSize: 11,
-    letterSpacing: 1,
-    marginTop: 8,
+  calendarSwipeBody: {
+    flex: 1,
   },
   panel: {
     backgroundColor: colors.paper,
@@ -2239,10 +2354,15 @@ const styles = StyleSheet.create({
     color: colors.paper,
   },
   sidebarLayer: {
+    bottom: 0,
     elevation: 999,
     flex: 1,
     flexDirection: 'row',
     justifyContent: 'flex-end',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0,
     zIndex: 999,
   },
   sidebarShade: {
@@ -2257,9 +2377,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.paper,
     borderColor: colors.border,
     borderLeftWidth: 3,
-    height: '100%',
+    bottom: 0,
     maxWidth: 390,
     paddingTop: 34,
+    position: 'absolute',
+    right: 0,
+    top: 0,
     width: '86%',
     ...shadowHard,
   },
